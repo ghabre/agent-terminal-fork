@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:" />
+  <title>NI Agent Terminal</title>
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="titlebar">
+    <div class="brand" title="NI Agent Terminal">
+      <img src="icon.png" alt="" />
+    </div>
+    <div id="tabs" role="tablist"></div>
+    <div class="new-tab-wrap">
+      <button id="btn-new" class="icon-btn" title="New tab (Ctrl+Shift+T)" aria-label="New tab">
+        <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 2v12M2 8h12" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drag-spacer"></div>
+    <button id="btn-history" class="icon-btn text-btn" title="History (Ctrl+Shift+H)">
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 4v4l2.5 1.5M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2 2.5v2.6h2.6" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>History</span>
+    </button>
+    <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 16 16" width="15" height="15"><path d="M6.6 1.5h2.8l.4 1.9 1.3.7 1.8-.7 1.4 2.4-1.4 1.3v1.6l1.4 1.3-1.4 2.4-1.8-.7-1.3.7-.4 1.9H6.6l-.4-1.9-1.3-.7-1.8.7-1.4-2.4 1.4-1.3V7.2L1.7 5.9l1.4-2.4 1.8.7 1.3-.7z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+    </button>
+    <div class="overlay-gap"></div>
+  </header>
+
+  <div id="new-menu" class="popover hidden" role="menu">
+    <label class="field">
+      <span>Folder</span>
+      <div class="row">
+        <select id="new-cwd"></select>
+        <button id="new-browse" class="small-btn" title="Choose another folder">…</button>
+      </div>
+    </label>
+    <div id="new-agents"></div>
+    <div class="popover-hint">Ctrl+Shift+1…4 opens an agent in the current tab's folder</div>
+  </div>
+
+  <main id="main">
+    <section id="terminals">
+      <div id="empty" class="empty hidden">
+        <h2>No open tabs</h2>
+        <p>Start an agent with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>, or resume one from History.</p>
+        <div id="empty-actions"></div>
+      </div>
+      <div id="find" class="find hidden">
+        <input id="find-input" placeholder="Find" spellcheck="false" />
+        <button id="find-prev" class="small-btn" title="Previous (Shift+Enter)">↑</button>
+        <button id="find-next" class="small-btn" title="Next (Enter)">↓</button>
+        <button id="find-close" class="small-btn" title="Close (Esc)">✕</button>
+      </div>
+      <div id="viewer" class="viewer hidden">
+        <div class="viewer-head">
+          <div class="viewer-title">
+            <span id="viewer-dot" class="dot"></span>
+            <div>
+              <div id="viewer-name" class="name"></div>
+              <div id="viewer-meta" class="meta"></div>
+            </div>
+          </div>
+          <div class="viewer-actions">
+            <div class="seg" id="viewer-mode">
+              <button data-mode="text" class="on">Text</button>
+              <button data-mode="raw">Replay</button>
+            </div>
+            <button id="viewer-export" class="small-btn">Export…</button>
+            <button id="viewer-resume" class="primary-btn">Resume</button>
+            <button id="viewer-close" class="small-btn" title="Close (Esc)">✕</button>
+          </div>
+        </div>
+        <pre id="viewer-text"></pre>
+        <div id="viewer-term"></div>
+      </div>
+    </section>
+
+    <aside id="history" class="hidden" aria-label="History">
+      <div class="side-head">
+        <h3>History</h3>
+        <button id="history-folder" class="small-btn" title="Open the history files on disk">Files</button>
+      </div>
+      <div class="seg filter" id="history-scope">
+        <button data-scope="tab" class="on" title="Prompts and conversations of the active tab">This tab</button>
+        <button data-scope="folder" title="Sessions started in one folder">Folder</button>
+        <button data-scope="all" title="Every session, all folders">All</button>
+      </div>
+      <div id="history-folder-row" class="folder-row hidden">
+        <select id="history-folder-select" title="Folder"></select>
+        <button id="history-import" class="small-btn hidden" title="Add conversations found in the agents' own stores for this folder"></button>
+      </div>
+      <div class="seg filter" id="history-filter">
+        <button data-agent="all" class="on">All</button>
+        <button data-agent="claude">Claude</button>
+        <button data-agent="codex">Codex</button>
+        <button data-agent="cursor">Cursor</button>
+        <button data-agent="shell">Shell</button>
+      </div>
+      <input id="history-search" class="search" placeholder="Search title, folder or id" spellcheck="false" />
+      <div id="history-tabhead" class="tabhead"></div>
+      <div id="history-list"></div>
+    </aside>
+  </main>
+
+  <footer id="status">
+    <span id="st-agent" class="st-agent"></span>
+    <span id="st-cwd" class="st-item" title="Working folder (click to open)"></span>
+    <span id="st-branch" class="st-item"></span>
+    <span id="st-session" class="st-item mono" title="Native session id (click to copy resume command)"></span>
+    <span class="st-fill"></span>
+    <span id="st-ws" class="st-item" title="ni-agentic-development workspace"></span>
+  </footer>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <div id="ctx" class="popover ctx hidden" role="menu"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
+  <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+'use strict';
+
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+async function call(channel, arg) {
+  const res = await ipcRenderer.invoke(channel, arg);
+  if (!res.ok) throw new Error(res.error);
+  return res.value;
+}
+
+function on(channel, fn) {
+  const listener = (_e, payload) => fn(payload);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
+
+contextBridge.exposeInMainWorld('api', {
+  init: () => call('app:init'),
+  devtools: () => call('app:devtools'),
+  closedOk: () => ipcRenderer.send('app:closed-ok'),
+  onBeforeClose: (fn) => on('app:before-close', fn),
+
+  start: (opts) => call('pty:start', opts),
+  kill: (tabId) => call('pty:kill', tabId),
+  write: (tabId, data) => ipcRenderer.send('pty:write', { tabId, data }),
+  resize: (tabId, cols, rows) => ipcRenderer.send('pty:resize', { tabId, cols, rows }),
+  onData: (fn) => on('pty:data', fn),
+  onExit: (fn) => on('pty:exit', fn),
+  onSessionUpdate: (fn) => on('session:update', fn),
+
+  historyList: (filter) => call('history:list', filter),
+  historyFolders: () => call('history:folders'),
+  historyGet: (ids) => call('history:get', ids),
+  historyImportable: (cwd) => call('history:importable', cwd),
+  historyImport: (cwd) => call('history:import', cwd),
+  historyRead: (id) => call('history:read', id),
+  historyDelete: (id) => call('history:delete', id),
+  historyRename: (id, title) => call('history:rename', { id, title }),
+  historyPrompts: (ids) => call('history:prompts', ids),
+  addPrompt: (tabId, text) => ipcRenderer.send('history:addPrompt', { tabId, text }),
+  onPrompt: (fn) => on('history:prompt', fn),
+  historySnapshot: (id, text, cleared) => call('history:snapshot', { id, text, cleared: !!cleared }),
+  historyOpenFolder: (arg) => call('history:openFolder', arg),
+  historyExport: (id) => call('history:export', id),
+
+  saveSettings: (patch) => call('settings:save', patch),
+  pickWorkspace: () => call('workspace:pick'),
+  pickFolder: () => call('workspace:pickFolder'),
+  refreshWorkspace: () => call('workspace:refresh'),
+  saveState: (state) => call('state:save', state),
+  openPath: (p) => call('shell:openPath', p),
+
+  pathForFile: (file) => webUtils.getPathForFile(file),
+  clipboardRead: () => call('clipboard:read'),
+  clipboardWrite: (text) => call('clipboard:write', text),
+});
