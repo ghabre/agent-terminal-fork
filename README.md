@@ -83,3 +83,7 @@ $c = "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
 ```
 
 Stack: Electron 33, xterm.js 5.5, node-pty 1.1 (ConPTY, N-API prebuilds, so no native rebuild), electron-builder 25.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

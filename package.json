@@ -5,7 +5,7 @@
   "description": "Multi-tab terminal for Claude Code, Codex and Cursor Agent with per-agent history, built for the ni-agentic-development workspace.",
   "main": "src/main.js",
   "author": "NI",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "electron .",
