@@ -1,9 +1,9 @@
 'use strict';
-// Agent definitions, command resolution and native-session discovery.
+// Agent definitions, environment and command resolution.
 //
-// Every agent keeps its own conversation store; this module only needs to know
-// enough about each store to find the session a tab created, so that the tab can
-// later be resumed with the agent's own --resume flag.
+// Each agent's command can be overridden in Setup, and Claude / Codex can be pointed
+// at a separate config folder (their own login and conversation store) through the
+// environment variable named by configEnv.
 
 const fs = require('fs');
 const os = require('os');
@@ -17,6 +17,8 @@ const AGENTS = {
     label: 'Claude',
     command: 'claude',
     color: '#d97757',
+    configEnv: 'CLAUDE_CONFIG_DIR',
+    defaultConfigDir: path.join(HOME, '.claude'),
     // Claude accepts a caller-chosen session id, so the id is known before launch.
     presetId: true,
     args(mode, nativeId) {
@@ -32,6 +34,8 @@ const AGENTS = {
     label: 'Codex',
     command: 'codex',
     color: '#10a37f',
+    configEnv: 'CODEX_HOME',
+    defaultConfigDir: path.join(HOME, '.codex'),
     presetId: false,
     args(mode, nativeId) {
       if (mode === 'resume' && nativeId) return ['resume', nativeId];
@@ -59,8 +63,8 @@ const AGENTS = {
     command: 'powershell.exe',
     color: '#8a8f98',
     presetId: false,
-    args() {
-      return ['-NoLogo'];
+    args(mode, nativeId, file) {
+      return /^(powershell|pwsh)(.exe)?$/i.test(path.basename(file || '')) ? ['-NoLogo'] : [];
     },
   },
 };
@@ -114,7 +118,14 @@ function buildEnv(extra) {
 }
 
 function which(name, env) {
-  if (path.isAbsolute(name) && fs.existsSync(name)) return name;
+  if (!name) return null;
+  if (path.isAbsolute(name)) {
+    try {
+      return fs.statSync(name).isFile() ? name : null;
+    } catch (_) {
+      return null;
+    }
+  }
   const dirs = (env.Path || '').split(path.delimiter).filter(Boolean);
   const exts = path.extname(name) ? [''] : ['.exe', '.cmd', '.bat', '.ps1'];
   for (const dir of dirs) {
@@ -161,30 +172,32 @@ function unwrapShim(cmdPath) {
 
 // Returns { file, args } where args is a single pre-quoted string, which is how
 // node-pty passes a command line through unchanged on Windows.
-function resolveLaunch(agentId, mode, nativeId, extraArgs, env) {
+// `command` overrides the agent's default command (a name on PATH or a full path).
+function resolveLaunch(agentId, mode, nativeId, extraArgs, env, command) {
   const agent = AGENTS[agentId];
   if (!agent) throw new Error(`Unknown agent: ${agentId}`);
-  const resolved = which(agent.command, env);
+  const cmd = (command || '').trim() || agent.command;
+  const resolved = which(cmd, env);
   if (!resolved) {
-    throw new Error(`'${agent.command}' was not found on PATH. Install it or add its folder to PATH.`);
+    throw new Error(`'${cmd}' was not found${path.isAbsolute(cmd) ? '' : ' on PATH'}. Install it, or set its path in Setup (Settings → Workspaces & agents).`);
   }
-  const args = [...agent.args(mode, nativeId), ...splitArgs(extraArgs)];
+  const args = [...agent.args(mode, nativeId, resolved), ...splitArgs(extraArgs)];
   const ext = path.extname(resolved).toLowerCase();
 
   if (ext === '.cmd' || ext === '.bat') {
     const shim = unwrapShim(resolved);
     if (shim) {
       const file = which(shim.file, env) || shim.file;
-      return { file, args: [...shim.pre, ...args].map(quoteArg).join(' '), display: [agent.command, ...args].join(' ') };
+      return { file, args: [...shim.pre, ...args].map(quoteArg).join(' '), display: [path.basename(cmd), ...args].join(' ') };
     }
     const inner = [resolved, ...args].map(quoteArg).join(' ');
-    return { file: process.env.ComSpec || 'cmd.exe', args: `/d /s /c "${inner}"`, display: [agent.command, ...args].join(' ') };
+    return { file: process.env.ComSpec || 'cmd.exe', args: `/d /s /c "${inner}"`, display: [path.basename(cmd), ...args].join(' ') };
   }
   if (ext === '.ps1') {
     const all = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolved, ...args];
-    return { file: 'powershell.exe', args: all.map(quoteArg).join(' '), display: [agent.command, ...args].join(' ') };
+    return { file: 'powershell.exe', args: all.map(quoteArg).join(' '), display: [path.basename(cmd), ...args].join(' ') };
   }
-  return { file: resolved, args: args.map(quoteArg).join(' '), display: [agent.command, ...args].join(' ') };
+  return { file: resolved, args: args.map(quoteArg).join(' '), display: [path.basename(cmd), ...args].join(' ') };
 }
 
 // Splits a user-entered extra-arguments string, honouring double quotes.
@@ -197,4 +210,16 @@ function splitArgs(str) {
   return out;
 }
 
-module.exports = { AGENTS, buildEnv, resolveLaunch };
+// Where an agent's command resolves to, or null when it is not installed.
+function locate(agentId, command, env) {
+  const agent = AGENTS[agentId];
+  return agent ? which((command || '').trim() || agent.command, env) : null;
+}
+
+// Environment for an agent running under a separate config folder (its own login).
+function agentEnv(agentId, configDir) {
+  const agent = AGENTS[agentId];
+  return agent && agent.configEnv && configDir ? { [agent.configEnv]: configDir } : {};
+}
+
+module.exports = { AGENTS, buildEnv, resolveLaunch, locate, agentEnv, splitArgs };

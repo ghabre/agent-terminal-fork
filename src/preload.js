@@ -44,8 +44,11 @@ contextBridge.exposeInMainWorld('api', {
   historyExport: (id) => call('history:export', id),
 
   saveSettings: (patch) => call('settings:save', patch),
-  pickWorkspace: () => call('workspace:pick'),
-  pickFolder: () => call('workspace:pickFolder'),
+  setupInfo: () => call('setup:info'),
+  setupLocate: (commands) => call('setup:locate', commands),
+  setupDescribe: (roots) => call('setup:describe', roots),
+  pickFolder: (opts) => call('workspace:pickFolder', opts),
+  pickFile: (opts) => call('dialog:pickFile', opts),
   refreshWorkspace: () => call('workspace:refresh'),
   saveState: (state) => call('state:save', state),
   openPath: (p) => call('shell:openPath', p),

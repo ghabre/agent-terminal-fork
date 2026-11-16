@@ -61,6 +61,11 @@ function agentLabel(agent) {
   return (state.agents[agent] && state.agents[agent].label) || agent;
 }
 
+// Agents switched on in Setup, in menu order.
+function enabledAgents() {
+  return AGENT_KEYS.filter((a) => !state.agents[a] || state.agents[a].enabled !== false);
+}
+
 function recordTitle(rec) {
   if (!rec) return 'New session';
   return rec.customTitle || rec.title || `${agentLabel(rec.agent)} session`;
@@ -300,7 +305,7 @@ function tabLabel(tab) {
 
 function labelForCwd(cwd) {
   if (!cwd) return state.workspace && state.workspace.root ? 'workspace' : '';
-  const d = state.workspace && state.workspace.dirs.find((x) => x.path.toLowerCase() === cwd.toLowerCase());
+  const d = state.workspace && state.workspace.dirs.find((x) => sameCwd(x.path, cwd));
   return d ? d.name : cwd.split(/[\\/]/).pop();
 }
 
@@ -595,6 +600,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'PageDown') return cycleTab(1);
   if (e.shiftKey && /^Digit[1-4]$/.test(e.code)) {
     const agent = AGENT_KEYS[Number(e.code.slice(5)) - 1];
+    if (!enabledAgents().includes(agent)) return toast(`${agentLabel(agent)} is switched off (Settings → Workspaces & agents)`);
     const cur = activeTab();
     return createTab({ agent, cwd: cur ? cur.cwd : defaultCwd() });
   }
@@ -661,17 +667,20 @@ function defaultCwd() {
   return (state.workspace && state.workspace.root) || null;
 }
 
+// One group per workspace folder: the folder itself, then the Git repositories in it.
 function fillCwdSelect(select, selected) {
   select.replaceChildren();
   const ws = state.workspace;
+  const branch = (d) => (d.branch ? ' · ' + d.branch : '');
   if (ws && ws.dirs.length) {
-    const rootDir = ws.dirs.find((d) => d.kind === 'root');
-    if (rootDir) select.append(el('option', { value: rootDir.path }, `${rootDir.name} (workspace root)${rootDir.branch ? ' · ' + rootDir.branch : ''}`));
-    const group = el('optgroup', { label: 'repos/' });
-    for (const d of ws.dirs.filter((x) => x.kind === 'repo')) {
-      group.append(el('option', { value: d.path }, `${d.name}${d.branch ? ' · ' + d.branch : ''}`));
+    for (const rootDir of ws.dirs.filter((d) => d.kind === 'root')) {
+      const group = el('optgroup', { label: rootDir.path });
+      group.append(el('option', { value: rootDir.path }, `${rootDir.name} (workspace)${branch(rootDir)}`));
+      for (const d of ws.dirs.filter((x) => x.kind === 'repo' && x.root === rootDir.root)) {
+        group.append(el('option', { value: d.path }, `${d.name}${branch(d)}`));
+      }
+      select.append(group);
     }
-    if (group.children.length) select.append(group);
   }
   if (selected && ![...select.options].some((o) => o.value.toLowerCase() === selected.toLowerCase())) {
     select.append(el('option', { value: selected }, selected));
@@ -689,7 +698,8 @@ function openNewMenu(cwd) {
   fillCwdSelect($('#new-cwd'), cwd || (cur && cur.cwd) || defaultCwd());
   const list = $('#new-agents');
   list.replaceChildren();
-  AGENT_KEYS.forEach((agent, i) => {
+  enabledAgents().forEach((agent) => {
+    const i = AGENT_KEYS.indexOf(agent);
     const info = state.agents[agent] || { available: false, label: agent };
     const go = (mode) => {
       closePopovers();
@@ -702,9 +712,9 @@ function openNewMenu(cwd) {
         el('span', { class: 'badge' }, BADGE[agent]),
         el(
           'button',
-          { class: 'main-btn', onclick: () => go('new'), title: info.available ? '' : 'Not found on PATH' },
+          { class: 'main-btn', onclick: () => go('new'), title: info.available ? info.path || '' : 'Not found. Set its command in Settings → Workspaces & agents.' },
           el('b', {}, info.label),
-          el('small', {}, info.available ? `New session · Ctrl+Shift+${i + 1}` : 'Not installed / not on PATH')
+          el('small', {}, info.available ? `New session · Ctrl+Shift+${i + 1}` : 'Not found · set its path in Setup')
         ),
         agent !== 'shell'
           ? el(
@@ -829,7 +839,7 @@ async function renderFolderRow(token, cwd) {
   };
   const ws = state.workspace;
   if (ws && ws.dirs) {
-    for (const d of ws.dirs) add(d.path, d.kind === 'root' ? `${d.name} (workspace root)` : d.name);
+    for (const d of ws.dirs) add(d.path, d.kind === 'root' ? `${d.name} (workspace)` : d.name);
   }
   for (const f of folders) add(f.cwd, f.label || f.cwd);
   if (cwd) add(cwd, labelForCwd(cwd));
@@ -1229,25 +1239,39 @@ function renderStatus() {
     $('#st-session').textContent = rec && rec.nativeId ? rec.nativeId.slice(0, 8) : tab.agent === 'shell' ? '' : 'session: detecting…';
   }
   const ws = state.workspace;
-  $('#st-ws').textContent = ws && ws.root ? `workspace: ${ws.root}${ws.valid ? '' : ' (not found)'}` : 'workspace: not set (Settings)';
+  const st = $('#st-ws');
+  if (ws && ws.roots && ws.roots.length) {
+    const extra = ws.roots.length > 1 ? ` +${ws.roots.length - 1}` : '';
+    st.textContent = `workspace: ${ws.roots[0]}${extra}${ws.missing && ws.missing.length ? ' (folder missing)' : ''}`;
+    st.title = `Workspace folders (click to change):\n${ws.roots.join('\n')}`;
+  } else {
+    st.textContent = 'workspace: not set (click to choose)';
+    st.title = 'Choose workspace folders';
+  }
 }
 $('#st-cwd').onclick = () => { const t = activeTab(); if (t && t.cwd) ipc.openPath(t.cwd); };
 $('#st-session').onclick = () => { const t = activeTab(); if (t && t.record) copyResumeCommand(t.record); };
-$('#st-ws').onclick = () => openSettings();
+$('#st-ws').onclick = () => openSetup();
 
 // ---------------------------------------------------------------------------
 // modal & settings
 // ---------------------------------------------------------------------------
 
-function openModal(title, body, actions) {
+// opts.locked: no closing by Esc or a click outside (first-run Setup).
+// opts.wide: a wider card.
+let modalLocked = false;
+function openModal(title, body, actions, opts = {}) {
+  modalLocked = !!opts.locked;
   $('#modal-title').textContent = title;
   $('#modal-body').replaceChildren(...body);
+  $('#modal .modal-card').classList.toggle('wide', !!opts.wide);
   $('#modal-actions').replaceChildren(
     ...actions.map((a) =>
       el('button', {
         class: a.primary ? 'primary-btn' : 'small-btn',
         onclick: async () => {
           if (a.run && (await a.run()) === false) return;
+          modalLocked = false;
           closeModal();
         },
       }, a.label)
@@ -1257,16 +1281,25 @@ function openModal(title, body, actions) {
 }
 
 function closeModal() {
+  if (modalLocked) return;
   $('#modal').classList.add('hidden');
   const t = activeTab();
   if (t) t.term.focus();
 }
 $('#modal').addEventListener('mousedown', (e) => e.target.id === 'modal' && closeModal());
 
+function applySaved(res) {
+  state.settings = res.settings;
+  state.workspace = res.workspace;
+  for (const a of res.agents) state.agents[a.id] = a;
+  renderEmptyActions();
+  renderTabs();
+  renderStatus();
+  renderHistory();
+}
+
 function openSettings() {
   const s = state.settings;
-  const root = el('input', { value: s.workspaceRoot || '', placeholder: 'C:\\…\\ni-agentic-development', spellcheck: 'false' });
-  const browse = el('button', { class: 'small-btn', onclick: async () => { const ws = await ipc.pickWorkspace(); if (ws) root.value = ws.root; } }, 'Browse…');
   const restore = el('input', { type: 'checkbox' });
   restore.checked = !!s.restoreTabs;
   const fontSize = el('input', { type: 'number', min: 8, max: 32, value: s.fontSize });
@@ -1277,14 +1310,19 @@ function openSettings() {
     startup[a].checked = (s.startupTabs || []).includes(a);
     extra[a] = el('input', { value: s.extraArgs[a] || '', spellcheck: 'false', placeholder: a === 'claude' ? 'e.g. --permission-mode acceptEdits' : a === 'codex' ? 'e.g. --model gpt-5-codex' : '' });
   }
+  const ws = state.workspace;
+  const wsSummary = ws && ws.roots && ws.roots.length ? ws.roots.join('\n') : 'No workspace folder set';
+  const agentsSummary = enabledAgents().map(agentLabel).join(', ') || 'none';
   openModal('Settings', [
-    el('label', { class: 'field' }, el('span', {}, 'ni-agentic-development workspace'), el('div', { class: 'row' }, root, browse),
-      el('div', { class: 'help' }, 'Agents start here by default so they load AGENTS.md / CLAUDE.md; repos/* are offered as folders. NI_WORKSPACE is set for every tab.')),
+    el('div', { class: 'field' }, el('span', {}, 'Workspaces & agents'),
+      el('div', { class: 'row setup-summary' },
+        el('div', { class: 'grow' }, el('div', { class: 'mono-sm' }, wsSummary), el('div', { class: 'help' }, `Agents: ${agentsSummary}`)),
+        el('button', { class: 'small-btn', onclick: () => openSetup() }, 'Change…'))),
     el('label', { class: 'check' }, restore, 'Reopen and resume last tabs on startup'),
     el('div', { class: 'field' }, el('span', {}, 'Tabs to open when there is nothing to restore'),
-      el('div', { class: 'row' }, ...AGENT_KEYS.map((a) => el('label', { class: 'check' }, startup[a], agentLabel(a))))),
+      el('div', { class: 'row' }, ...enabledAgents().map((a) => el('label', { class: 'check' }, startup[a], agentLabel(a))))),
     el('label', { class: 'field' }, el('span', {}, 'Font size'), fontSize),
-    ...AGENT_KEYS.map((a) => el('label', { class: 'field' }, el('span', {}, `${agentLabel(a)} extra arguments`), extra[a])),
+    ...enabledAgents().map((a) => el('label', { class: 'field' }, el('span', {}, `${agentLabel(a)} extra arguments`), extra[a])),
     el('div', { class: 'help' }, `Data folder: ${state.userData}`),
   ], [
     { label: 'Cancel' },
@@ -1293,21 +1331,172 @@ function openSettings() {
       primary: true,
       run: async () => {
         const patch = {
-          workspaceRoot: root.value.trim() || null,
           restoreTabs: restore.checked,
           fontSize: Number(fontSize.value) || 14,
           startupTabs: AGENT_KEYS.filter((a) => startup[a].checked),
           extraArgs: Object.fromEntries(AGENT_KEYS.map((a) => [a, extra[a].value.trim()])),
         };
-        state.settings = await ipc.saveSettings(patch);
+        applySaved(await ipc.saveSettings(patch));
         setFontSize(state.settings.fontSize);
-        state.workspace = await ipc.refreshWorkspace();
-        renderStatus();
       },
     },
   ]);
 }
 $('#btn-settings').onclick = openSettings;
+
+// ---------------------------------------------------------------------------
+// setup: workspace folders and agents (first start, or Settings → Change…)
+// ---------------------------------------------------------------------------
+
+const AGENT_HINTS = {
+  claude: 'Claude Code CLI (npm i -g @anthropic-ai/claude-code)',
+  codex: 'OpenAI Codex CLI (npm i -g @openai/codex)',
+  cursor: 'Cursor Agent CLI (cursor-agent)',
+  shell: 'Plain shell tab: powershell.exe, pwsh.exe or cmd.exe',
+};
+
+async function openSetup({ first = false } = {}) {
+  const info = await ipc.setupInfo();
+  const s = info.settings;
+  const status = Object.fromEntries(info.agents.map((a) => [a.id, a]));
+  let roots = s.workspaces.length ? [...s.workspaces] : [...info.suggested];
+
+  // ---- workspace folders ----
+  const wsList = el('div', { class: 'ws-list' });
+  const renderRoots = async () => {
+    const desc = await ipc.setupDescribe(roots).catch(() => ({ dirs: [], missing: [] }));
+    const repoCount = (r) => desc.dirs.filter((d) => d.kind === 'repo' && d.root === r).length;
+    wsList.replaceChildren(
+      ...(roots.length
+        ? roots.map((r, i) =>
+            el('div', { class: 'ws-row' },
+              el('div', { class: 'grow' },
+                el('div', { class: 'mono-sm' }, r),
+                el('div', { class: 'help' },
+                  (desc.missing || []).includes(r)
+                    ? 'Folder not found'
+                    : `${i === 0 ? 'Default for new tabs · ' : ''}${repoCount(r)} Git ${repoCount(r) === 1 ? 'repository' : 'repositories'} inside`)),
+              i > 0 ? el('button', { class: 'small-btn', title: 'Make this the default folder', onclick: () => { roots.unshift(roots.splice(i, 1)[0]); renderRoots(); } }, '↑') : null,
+              el('button', { class: 'small-btn', title: 'Remove', onclick: () => { roots.splice(i, 1); renderRoots(); } }, '✕')))
+        : [el('div', { class: 'help ws-empty' }, 'No folder yet. Tabs would open in your home folder.')])
+    );
+  };
+  const addFolder = el('button', {
+    class: 'small-btn',
+    onclick: async () => {
+      const dir = await ipc.pickFolder({ title: 'Add a workspace folder', defaultPath: roots[0] || info.home });
+      if (dir && !roots.some((r) => sameCwd(r, dir))) roots.push(dir);
+      renderRoots();
+    },
+  }, 'Add folder…');
+
+  // ---- agents ----
+  const rows = {};
+  const locateSoon = (() => {
+    let timer = null;
+    return () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const found = await ipc.setupLocate(Object.fromEntries(AGENT_KEYS.map((a) => [a, rows[a].command.value.trim()])));
+        for (const a of AGENT_KEYS) rows[a].setFound(found[a]);
+      }, 250);
+    };
+  })();
+  const agentCards = AGENT_KEYS.map((a) => {
+    const st = status[a] || {};
+    const cfg = (s.agents && s.agents[a]) || {};
+    const enabled = el('input', { type: 'checkbox' });
+    enabled.checked = cfg.enabled !== false;
+    const found = el('span', { class: 'found' });
+    const setFound = (p) => {
+      found.textContent = p ? `found · ${p}` : 'not found';
+      found.classList.toggle('missing', !p);
+      found.title = p || 'Not on PATH. Install it, or enter the full path to its .exe / .cmd.';
+    };
+    setFound(st.path);
+    const command = el('input', { value: cfg.command || '', placeholder: `${st.defaultCommand || a} (from PATH)`, spellcheck: 'false' });
+    command.addEventListener('input', locateSoon);
+    const browseCmd = el('button', {
+      class: 'small-btn',
+      onclick: async () => {
+        const f = await ipc.pickFile({ title: `${agentLabel(a)} command`, defaultPath: command.value || st.path || undefined });
+        if (f) {
+          command.value = f;
+          locateSoon();
+        }
+      },
+    }, 'Browse…');
+    let configDir = null;
+    let accountField = null;
+    if (st.configEnv) {
+      configDir = el('input', { value: cfg.configDir || '', placeholder: `Default: ${st.defaultConfigDir}`, spellcheck: 'false' });
+      const browseDir = el('button', {
+        class: 'small-btn',
+        onclick: async () => {
+          const d = await ipc.pickFolder({ title: `${agentLabel(a)} account folder (${st.configEnv})`, defaultPath: configDir.value || st.defaultConfigDir });
+          if (d) configDir.value = d;
+        },
+      }, 'Browse…');
+      accountField = el('label', { class: 'field' },
+        el('span', {}, `Account folder (${st.configEnv})`),
+        el('div', { class: 'row' }, configDir, browseDir),
+        el('div', { class: 'help' }, 'Empty: your normal login. Another folder runs this agent under a separate account (sign in once in a tab); its conversations and history stay with that folder.'));
+    } else if (a === 'cursor') {
+      accountField = el('div', { class: 'help' }, 'Cursor Agent uses its normal login (no separate account folder).');
+    }
+    const body = el('div', { class: 'agent-body' },
+      el('label', { class: 'field' }, el('span', {}, 'Command'), el('div', { class: 'row' }, command, browseCmd)),
+      accountField);
+    const card = el('div', { class: 'agent-card', style: `--c:${agentColor(a)}` },
+      el('div', { class: 'agent-head' },
+        el('label', { class: 'check' }, enabled, el('span', { class: 'badge' }, BADGE[a]), el('b', {}, agentLabel(a))),
+        found),
+      el('div', { class: 'help' }, AGENT_HINTS[a]),
+      body);
+    const sync = () => card.classList.toggle('off', !enabled.checked);
+    enabled.addEventListener('change', sync);
+    sync();
+    rows[a] = { enabled, command, configDir, setFound };
+    return card;
+  });
+
+  renderRoots();
+  const body = [
+    first ? el('p', { class: 'setup-intro' }, 'Choose the folders the agents work in and how each agent is started. You can change this later in Settings.') : null,
+    el('div', { class: 'setup-section' },
+      el('h4', {}, 'Workspace folders'),
+      el('div', { class: 'help' }, 'New tabs open in the first folder. Git repositories inside these folders (up to two levels down, e.g. repos/<name>) are listed in the new-tab folder picker and the History Folder view.'),
+      wsList,
+      el('div', { class: 'row' }, addFolder)),
+    el('div', { class: 'setup-section' }, el('h4', {}, 'Agents'), ...agentCards),
+  ].filter(Boolean);
+
+  const save = async () => {
+    const agents = {};
+    for (const a of AGENT_KEYS) {
+      agents[a] = {
+        enabled: rows[a].enabled.checked,
+        command: rows[a].command.value.trim(),
+        configDir: rows[a].configDir ? rows[a].configDir.value.trim() : '',
+      };
+    }
+    if (!AGENT_KEYS.some((a) => agents[a].enabled)) {
+      toast('Enable at least one agent');
+      return false;
+    }
+    const startupTabs = (state.settings.startupTabs || []).filter((a) => agents[a].enabled);
+    const res = await ipc.saveSettings({ setupDone: true, workspaces: roots, agents, startupTabs });
+    applySaved(res);
+    if (first && !state.tabs.length) openStartupTabs();
+    return true;
+  };
+  openModal(first ? 'Welcome: set up NI Agent Terminal' : 'Workspaces & agents', body, [
+    first
+      ? { label: 'Skip for now', run: async () => { applySaved(await ipc.saveSettings({ setupDone: true })); if (!state.tabs.length) openStartupTabs(); } }
+      : { label: 'Cancel' },
+    { label: first ? 'Start' : 'Save', primary: true, run: save },
+  ], { wide: true, locked: first });
+}
 
 // ---------------------------------------------------------------------------
 // layout, persistence, lifecycle
@@ -1427,10 +1616,13 @@ async function boot() {
   state.workspace = init.workspace;
   state.userData = init.userData;
   for (const a of init.agents) state.agents[a.id] = a;
+  renderEmptyActions();
 
-  const empty = $('#empty-actions');
-  for (const a of ['claude', 'codex', 'cursor']) {
-    empty.append(el('button', { class: 'small-btn', onclick: () => createTab({ agent: a, cwd: defaultCwd() }) }, `New ${agentLabel(a)}`));
+  // First start: Setup comes first, and the startup tabs open once it is done.
+  if (!state.settings.setupDone) {
+    renderTabs();
+    renderStatus();
+    return openSetup({ first: true });
   }
 
   if (init.restore.length) {
@@ -1447,14 +1639,26 @@ async function boot() {
     const idx = Math.min(init.activeIndex || 0, state.tabs.length - 1);
     activateTab(state.tabs[idx].id);
   } else {
-    const startup = (state.settings.startupTabs || []).filter((a) => state.agents[a] && state.agents[a].available);
-    startup.forEach((a, i) => createTab({ agent: a, cwd: defaultCwd(), activate: i === 0 }));
+    openStartupTabs();
   }
   renderTabs();
   renderStatus();
-  if (!state.workspace || !state.workspace.valid) {
-    toast('ni-agentic-development workspace not found. Set it in Settings.');
-  }
+  const ws = state.workspace;
+  if (!ws || !ws.roots || !ws.roots.length) toast('No workspace folder set. Click "workspace" in the status bar to choose one.');
+  else if (ws.missing && ws.missing.length) toast(`Workspace folder not found: ${ws.missing[0]}`);
+}
+
+function openStartupTabs() {
+  const startup = (state.settings.startupTabs || []).filter((a) => enabledAgents().includes(a) && state.agents[a] && state.agents[a].available);
+  startup.forEach((a, i) => createTab({ agent: a, cwd: defaultCwd(), activate: i === 0 }));
+}
+
+function renderEmptyActions() {
+  const empty = $('#empty-actions');
+  empty.replaceChildren(
+    ...enabledAgents().map((a) => el('button', { class: 'small-btn', onclick: () => createTab({ agent: a, cwd: defaultCwd() }) }, `New ${agentLabel(a)}`)),
+    el('button', { class: 'small-btn', onclick: () => openSetup() }, 'Workspaces & agents…')
+  );
 }
 
 boot().catch((err) => {

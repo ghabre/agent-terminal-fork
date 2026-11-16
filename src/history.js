@@ -187,7 +187,7 @@ class History {
     return [...map.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
   }
 
-  create({ agent, cwd, nativeId, title, workspaceRoot, parentId, imported, createdAt }) {
+  create({ agent, cwd, nativeId, title, workspaceRoot, configDir, parentId, imported, createdAt }) {
     const now = Date.now();
     const rec = {
       id: crypto.randomUUID(),
@@ -195,6 +195,8 @@ class History {
       cwd,
       folder: folderKey(cwd),
       workspaceRoot: workspaceRoot || null,
+      // Agent config folder (CLAUDE_CONFIG_DIR / CODEX_HOME) when not the default one.
+      configDir: configDir || null,
       nativeId: nativeId || null,
       title: title || null,
       customTitle: null,

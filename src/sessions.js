@@ -2,7 +2,8 @@
 // Native session discovery and titles.
 //
 // Each agent can switch conversations while it runs (/clear, /new, /resume), so the
-// app keeps asking the agent's own store which conversation a tab is on:
+// app keeps asking the agent's own store which conversation a tab is on. `dir`, where
+// given, is the agent's config folder (CLAUDE_CONFIG_DIR / CODEX_HOME) for that tab:
 //   claude  ~/.claude/sessions/<pid>.json names the live process's current session
 //           exactly; the project folder's *.jsonl files are the fallback.
 //   codex   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, whose first line holds id + cwd.
@@ -86,23 +87,23 @@ function readFirstLine(file, max = 4 * 1024 * 1024) {
   }
 }
 
-const claudeBase = () => process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
-const codexBase = () => process.env.CODEX_HOME || path.join(HOME, '.codex');
+const claudeBase = (dir) => dir || process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
+const codexBase = (dir) => dir || process.env.CODEX_HOME || path.join(HOME, '.codex');
 const cursorBase = () => process.env.CURSOR_CHATS_DIR || path.join(HOME, '.cursor', 'chats');
 
 // ---------------------------------------------------------------------------
 // Claude
 // ---------------------------------------------------------------------------
 
-function claudeProjectDir(cwd) {
-  return path.join(claudeBase(), 'projects', path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+function claudeProjectDir(cwd, dir) {
+  return path.join(claudeBase(dir), 'projects', path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
 }
 
-function claudeSessionFile(cwd, id) {
-  const own = path.join(claudeProjectDir(cwd), `${id}.jsonl`);
+function claudeSessionFile(cwd, id, dir) {
+  const own = path.join(claudeProjectDir(cwd, dir), `${id}.jsonl`);
   if (safeStat(own)) return own;
   // The session may have been started from another folder.
-  const base = path.join(claudeBase(), 'projects');
+  const base = path.join(claudeBase(dir), 'projects');
   for (const d of safeReaddir(base)) {
     const f = path.join(base, d.name, `${id}.jsonl`);
     if (d.isDirectory() && safeStat(f)) return f;
@@ -110,15 +111,15 @@ function claudeSessionFile(cwd, id) {
   return null;
 }
 
-function claudeSessionExists(cwd, id) {
-  return !!id && !!claudeSessionFile(cwd, id);
+function claudeSessionExists(cwd, id, dir) {
+  return !!id && !!claudeSessionFile(cwd, id, dir);
 }
 
 // The session a running Claude process is on right now, read from its pid file.
 // Claude rewrites the file on /clear and /resume, so it follows the conversation exactly.
-function claudeLiveSession(pid, cwd, since) {
+function claudeLiveSession(pid, cwd, since, dir) {
   if (!pid) return null;
-  const file = path.join(claudeBase(), 'sessions', `${pid}.json`);
+  const file = path.join(claudeBase(dir), 'sessions', `${pid}.json`);
   const st = safeStat(file);
   // Ignore a file left behind by an earlier process that had the same pid.
   if (!st || st.mtimeMs < since - 10000) return null;
@@ -133,8 +134,8 @@ function claudeLiveSession(pid, cwd, since) {
   }
 }
 
-function claudeSessions(cwd, since) {
-  const dir = claudeProjectDir(cwd);
+function claudeSessions(cwd, since, configDir) {
+  const dir = claudeProjectDir(cwd, configDir);
   const out = [];
   for (const e of safeReaddir(dir)) {
     if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
@@ -144,8 +145,8 @@ function claudeSessions(cwd, since) {
   return out;
 }
 
-function claudeTitle(cwd, nativeId) {
-  const file = claudeSessionFile(cwd, nativeId);
+function claudeTitle(cwd, nativeId, dir) {
+  const file = claudeSessionFile(cwd, nativeId, dir);
   if (!file) return null;
   // Claude appends ai-title / custom-title lines as the conversation goes; the last one wins.
   const tail = readTail(file, 512 * 1024).split('\n');
@@ -177,8 +178,8 @@ function claudeTitle(cwd, nativeId) {
 // Codex
 // ---------------------------------------------------------------------------
 
-function codexDayDirs(since) {
-  const base = path.join(codexBase(), 'sessions');
+function codexDayDirs(since, configDir) {
+  const base = path.join(codexBase(configDir), 'sessions');
   const dirs = new Set();
   const now = Date.now();
   for (let t = Math.max(since - 86400000, now - 40 * 86400000); ; t += 86400000) {
@@ -214,9 +215,9 @@ function codexMeta(file, name) {
   return meta;
 }
 
-function codexSessions(cwd, since) {
+function codexSessions(cwd, since, configDir) {
   const out = [];
-  for (const dir of codexDayDirs(since)) {
+  for (const dir of codexDayDirs(since, configDir)) {
     for (const e of safeReaddir(dir)) {
       if (!e.isFile() || !/^rollout-.*\.jsonl$/.test(e.name)) continue;
       const file = path.join(dir, e.name);
@@ -230,11 +231,12 @@ function codexSessions(cwd, since) {
   return out;
 }
 
-let codexIndex = { mtime: -1, names: new Map() };
-function codexTitle(nativeId) {
-  const file = path.join(codexBase(), 'session_index.jsonl');
+const codexIndexes = new Map(); // session_index.jsonl path -> { mtime, names }
+function codexTitle(nativeId, dir) {
+  const file = path.join(codexBase(dir), 'session_index.jsonl');
   const st = safeStat(file);
   if (!st) return null;
+  let codexIndex = codexIndexes.get(file) || { mtime: -1, names: new Map() };
   if (st.mtimeMs !== codexIndex.mtime) {
     const names = new Map();
     try {
@@ -246,6 +248,7 @@ function codexTitle(nativeId) {
       }
     } catch (_) { /* unreadable */ }
     codexIndex = { mtime: st.mtimeMs, names };
+    codexIndexes.set(file, codexIndex);
   }
   return codexIndex.names.get(nativeId) || null;
 }
@@ -298,19 +301,19 @@ function cursorTitle(nativeId) {
 
 // Conversations of an agent in a folder that were written to since `since`:
 // [{ id, birth, t, title? }], most recently written first.
-function listSessions(agentId, cwd, since) {
+function listSessions(agentId, cwd, since, dir) {
   let out = [];
-  if (agentId === 'claude') out = claudeSessions(cwd, since);
-  else if (agentId === 'codex') out = codexSessions(cwd, since);
+  if (agentId === 'claude') out = claudeSessions(cwd, since, dir);
+  else if (agentId === 'codex') out = codexSessions(cwd, since, dir);
   else if (agentId === 'cursor') out = cursorSessions(cwd, since);
   return out.sort((a, b) => b.t - a.t);
 }
 
 // The title the agent itself gave the conversation, when it keeps one.
-function nativeTitle(agentId, cwd, nativeId) {
+function nativeTitle(agentId, cwd, nativeId, dir) {
   if (!nativeId) return null;
-  if (agentId === 'claude') return claudeTitle(cwd, nativeId);
-  if (agentId === 'codex') return codexTitle(nativeId);
+  if (agentId === 'claude') return claudeTitle(cwd, nativeId, dir);
+  if (agentId === 'codex') return codexTitle(nativeId, dir);
   if (agentId === 'cursor') return cursorTitle(nativeId);
   return null;
 }

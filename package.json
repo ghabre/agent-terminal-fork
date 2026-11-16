@@ -1,8 +1,8 @@
 {
   "name": "ni-agent-terminal",
   "productName": "NI Agent Terminal",
-  "version": "1.1.0",
-  "description": "Multi-tab terminal for Claude Code, Codex and Cursor Agent with per-agent history, built for the ni-agentic-development workspace.",
+  "version": "1.2.0",
+  "description": "Multi-tab terminal for Claude Code, Codex and Cursor Agent with per-folder, per-agent session history.",
   "main": "src/main.js",
   "author": "NI",
   "license": "MIT",
