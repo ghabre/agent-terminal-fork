@@ -628,6 +628,8 @@ function createWindow() {
   });
   if (state.maximized) win.maximize();
   win.once('ready-to-show', () => win.show());
+  // Never leave a windowless instance holding the single-instance lock.
+  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 5000);
   if (SMOKE_SHOT) {
     win.webContents.on('console-message', (_e, level, message, line, source) => console.log(`[renderer:${level}] ${message} (${source}:${line})`));
     const delay = Number(process.env.NI_TERM_SMOKE_DELAY || 12000);
@@ -670,9 +672,12 @@ function createWindow() {
 }
 
 app.on('second-instance', () => {
-  if (win) {
+  if (win && !win.isDestroyed()) {
     if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
     win.focus();
+  } else if (app.isReady()) {
+    createWindow();
   }
 });
 
