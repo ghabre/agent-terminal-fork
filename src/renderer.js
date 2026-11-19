@@ -66,6 +66,34 @@ function enabledAgents() {
   return AGENT_KEYS.filter((a) => !state.agents[a] || state.agents[a].enabled !== false);
 }
 
+// Accounts set up in Setup for an agent (Claude / Codex: config folders, Cursor: API keys).
+function accountsOf(agent) {
+  const a = state.settings && state.settings.agents && state.settings.agents[agent];
+  return (a && a.accounts) || [];
+}
+
+// The account new tabs of this agent use.
+function activeAccountOf(agent) {
+  const a = state.settings && state.settings.agents && state.settings.agents[agent];
+  const list = accountsOf(agent);
+  return list.find((x) => x.id === (a && a.activeAccount)) || list[0] || null;
+}
+
+// Accounts are only shown once an agent has more than one.
+function multiAccount(agent) {
+  return accountsOf(agent).length > 1;
+}
+
+// The account a tab runs under: its conversation's, else the one it will start with.
+function tabAccount(tab) {
+  const list = accountsOf(tab.agent);
+  const id = tab.record ? tab.record.accountId : tab.accountId;
+  const found = list.find((x) => x.id === id);
+  if (found) return found;
+  if (tab.record && tab.record.accountName) return { id: null, name: tab.record.accountName };
+  return activeAccountOf(tab.agent);
+}
+
 function recordTitle(rec) {
   if (!rec) return 'New session';
   return rec.customTitle || rec.title || `${agentLabel(rec.agent)} session`;
@@ -125,7 +153,7 @@ function activeTab() {
   return state.tabs.find((t) => t.id === state.activeId) || null;
 }
 
-function createTab({ agent, cwd, record, mode, chain, activate = true }) {
+function createTab({ agent, cwd, record, mode, chain, accountId, activate = true }) {
   const id = `t${state.nextTabId++}`;
   const host = el('div', { class: 'term-host hidden-tab' });
   $('#terminals').append(host);
@@ -150,6 +178,8 @@ function createTab({ agent, cwd, record, mode, chain, activate = true }) {
   const tab = {
     id, agent, cwd, mode: mode || (record ? 'resume' : 'new'),
     record: record || null, term, fit, search, host,
+    // Account a new conversation starts under (null: the agent's current one).
+    accountId: accountId || null,
     started: false, running: false, exitCode: null, dirty: false, lastSnapshot: 0,
     node: null, exitBar: null, input: newInput(),
     // Every conversation this tab has gone through (/clear, /new, /resume), oldest first.
@@ -220,6 +250,7 @@ async function startTab(tab) {
       cwd: tab.cwd,
       recordId: tab.record && tab.record.id,
       mode: tab.mode,
+      accountId: tab.accountId,
       cols: tab.term.cols,
       rows: tab.term.rows,
     });
@@ -300,7 +331,8 @@ function tabLabel(tab) {
   const rec = tab.record;
   const where = rec ? rec.cwdLabel : labelForCwd(tab.cwd);
   const title = rec && (rec.customTitle || rec.title);
-  return { main: title || agentLabel(tab.agent), sub: where };
+  const acct = multiAccount(tab.agent) ? tabAccount(tab) : null;
+  return { main: title || agentLabel(tab.agent), sub: acct ? `${where} · ${acct.name}` : where };
 }
 
 function labelForCwd(cwd) {
@@ -320,7 +352,7 @@ function renderTabs() {
         class: `tab${tab.id === state.activeId ? ' active' : ''}${tab.started && !tab.running ? ' exited' : ''}${tab.activity ? ' activity' : ''}`,
         style: `--c:${agentColor(tab.agent)}`,
         role: 'tab',
-        title: `${agentLabel(tab.agent)} · ${tab.cwd || ''}`,
+        title: `${agentLabel(tab.agent)}${multiAccount(tab.agent) ? ` (${tabAccount(tab).name})` : ''} · ${tab.cwd || ''}`,
         draggable: 'true',
         onmousedown: (e) => {
           if (e.button === 0 && !e.target.closest('.close')) activateTab(tab.id);
@@ -372,6 +404,7 @@ function tabMenu(tab, x, y) {
     { label: tab.running ? 'Restart (resume)' : 'Resume', run: async () => { if (tab.running) await ipc.kill(tab.id); tab.running = false; restartTab(tab); } },
     { label: `New ${agentLabel(tab.agent)} here`, run: () => createTab({ agent: tab.agent, cwd: tab.cwd }) },
     { label: 'Duplicate folder in…', run: () => openNewMenu(tab.cwd) },
+    ...accountMenuItems(tab),
     '-',
     { label: 'Open folder', run: () => ipc.openPath(tab.cwd) },
     { label: 'Prompt history', hint: 'Ctrl+Shift+H', run: () => { activateTab(tab.id); state.historyScope = 'tab'; toggleHistory(true); } },
@@ -380,6 +413,62 @@ function tabMenu(tab, x, y) {
     '-',
     { label: 'Close', hint: 'Ctrl+Shift+W', run: () => closeTab(tab.id) },
   ]);
+}
+
+// "Switch to <account>" entries for a tab's menus; none while the agent has one account.
+function accountMenuItems(tab) {
+  if (!tab || !multiAccount(tab.agent)) return [];
+  const cur = tabAccount(tab);
+  const next = nextAccount(tab);
+  return [
+    '-',
+    ...accountsOf(tab.agent).map((a) =>
+      a.id === cur.id
+        ? { label: `✓ ${a.name}`, hint: 'current account', run: () => {} }
+        : { label: `Switch to ${a.name}`, hint: next && a.id === next.id ? 'Ctrl+Shift+A' : '', run: () => switchTabAccount(tab, a.id) }
+    ),
+  ];
+}
+
+function nextAccount(tab) {
+  const list = accountsOf(tab.agent);
+  if (list.length < 2) return null;
+  const i = list.findIndex((a) => a.id === tabAccount(tab).id);
+  return list[(i + 1) % list.length];
+}
+
+// Runs the tab's conversation under another account: the agent is stopped, the
+// conversation is copied into that account's store, and it is resumed there.
+async function switchTabAccount(tab, accountId) {
+  const acct = accountsOf(tab.agent).find((a) => a.id === accountId);
+  if (!acct) return;
+  const label = `${agentLabel(tab.agent)} → ${acct.name}`;
+  if (!tab.record) {
+    // Not started yet: it simply starts under that account.
+    tab.accountId = acct.id;
+    applySaved(await ipc.saveSettings({ agents: { [tab.agent]: { activeAccount: acct.id } } }));
+    saveState();
+    return toast(label);
+  }
+  if (tab.running) await snapshot(tab, true);
+  let res;
+  try {
+    res = await ipc.switchAccount({ tabId: tab.running ? tab.id : null, recordId: tab.record.id, accountId: acct.id });
+  } catch (err) {
+    return toast(err.message);
+  }
+  state.settings = res.settings;
+  tab.record = res.record;
+  tab.accountId = acct.id;
+  tab.running = false;
+  tab.term.write(`\r\n\x1b[2m[Switching to ${agentLabel(tab.agent)} account "${acct.name}"]\x1b[0m\r\n`);
+  if (!res.copied) toast(`${label}: the conversation was not found in the old account, so it may start fresh`);
+  else toast(label);
+  if (tab.started) startTab(tab);
+  renderTabs();
+  renderStatus();
+  renderEmptyActions();
+  saveState();
 }
 
 function hasOutput(tab) {
@@ -547,6 +636,7 @@ async function pasteInto(tab, fromMouse) {
 
 function handleTermKey(tab, e) {
   if (e.type !== 'keydown') return true;
+  if (handleScrollKey(tab.term, e)) return false;
   const ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
   const k = e.key.toLowerCase();
 
@@ -574,12 +664,25 @@ function handleTermKey(tab, e) {
   return true;
 }
 
+function handleScrollKey(term, e) {
+  if (e.type !== 'keydown' || !e.shiftKey || e.altKey || e.metaKey) return false;
+  let scroll;
+  if (e.ctrlKey && e.key === 'Home') scroll = () => term.scrollToTop();
+  else if (e.ctrlKey && e.key === 'End') scroll = () => term.scrollToBottom();
+  else if (!e.ctrlKey && e.key === 'PageUp') scroll = () => term.scrollPages(-1);
+  else if (!e.ctrlKey && e.key === 'PageDown') scroll = () => term.scrollPages(1);
+  if (!scroll) return false;
+  e.preventDefault();
+  scroll();
+  return true;
+}
+
 function isAppShortcut(e) {
   const ctrl = e.ctrlKey && !e.altKey;
   const k = e.key.toLowerCase();
   if (ctrl && e.key === 'Tab') return true;
   if (ctrl && (e.key === 'PageUp' || e.key === 'PageDown')) return true;
-  if (ctrl && e.shiftKey && ['t', 'w', 'h', 'f', 'i', ',', '1', '2', '3', '4', '!', '@', '#', '$'].includes(k)) return true;
+  if (ctrl && e.shiftKey && ['t', 'w', 'h', 'f', 'i', 'a', ',', '1', '2', '3', '4', '!', '@', '#', '$'].includes(k)) return true;
   if (ctrl && !e.shiftKey && ['=', '+', '-', '0'].includes(e.key)) return true;
   if (ctrl && e.shiftKey && /^Digit[1-4]$/.test(e.code)) return true;
   return false;
@@ -609,6 +712,13 @@ document.addEventListener('keydown', (e) => {
   if (e.shiftKey && k === 'h') return toggleHistory();
   if (e.shiftKey && k === 'f') return openFind();
   if (e.shiftKey && k === 'i') return ipc.devtools();
+  if (e.shiftKey && k === 'a') {
+    const tab = activeTab();
+    if (!tab || tab.agent === 'shell') return;
+    const next = nextAccount(tab);
+    if (!next) return toast(`${agentLabel(tab.agent)} has one account. Add another in Settings → Workspaces & agents.`);
+    return switchTabAccount(tab, next.id);
+  }
   if (e.shiftKey && k === ',') return openSettings();
   if (e.key === '=' || e.key === '+') return setFontSize(state.settings.fontSize + 1);
   if (e.key === '-') return setFontSize(state.settings.fontSize - 1);
@@ -701,9 +811,20 @@ function openNewMenu(cwd) {
   enabledAgents().forEach((agent) => {
     const i = AGENT_KEYS.indexOf(agent);
     const info = state.agents[agent] || { available: false, label: agent };
-    const go = (mode) => {
+    let acctSelect = null;
+    if (multiAccount(agent)) {
+      const cur = activeAccountOf(agent);
+      acctSelect = el('select', { class: 'acct-select', title: 'Account' },
+        ...accountsOf(agent).map((a) => el('option', { value: a.id, selected: a.id === cur.id }, a.name)));
+    }
+    const go = async (mode) => {
       closePopovers();
-      createTab({ agent, cwd: $('#new-cwd').value || null, mode });
+      const accountId = acctSelect ? acctSelect.value : null;
+      // The account picked here becomes the one Ctrl+Shift+1…4 use as well.
+      if (accountId && accountId !== activeAccountOf(agent).id) {
+        applySaved(await ipc.saveSettings({ agents: { [agent]: { activeAccount: accountId } } }));
+      }
+      createTab({ agent, cwd: $('#new-cwd').value || null, mode, accountId });
     };
     list.append(
       el(
@@ -716,6 +837,7 @@ function openNewMenu(cwd) {
           el('b', {}, info.label),
           el('small', {}, info.available ? `New session · Ctrl+Shift+${i + 1}` : 'Not found · set its path in Setup')
         ),
+        acctSelect,
         agent !== 'shell'
           ? el(
               'div',
@@ -727,9 +849,10 @@ function openNewMenu(cwd) {
       )
     );
   });
+  menu.classList.toggle('with-accounts', enabledAgents().some(multiAccount));
   menu.classList.remove('hidden');
   const btn = $('#btn-new').getBoundingClientRect();
-  menu.style.left = Math.min(btn.left, window.innerWidth - 350) + 'px';
+  menu.style.left = Math.max(8, Math.min(btn.left, window.innerWidth - menu.offsetWidth - 10)) + 'px';
 }
 
 $('#btn-new').addEventListener('click', (e) => {
@@ -992,6 +1115,7 @@ function historyItem(rec, { hideFolder = false, current = false } = {}) {
   const openTab = state.tabs.find((t) => t.record && t.record.id === rec.id);
   const meta = [
     rec.agent !== 'shell' || state.historyAgent === 'all' ? agentLabel(rec.agent) : null,
+    multiAccount(rec.agent) && rec.accountName ? rec.accountName : null,
     hideFolder ? null : rec.cwdLabel,
     rec.branch,
     relTime(rec.lastActiveAt),
@@ -1184,6 +1308,7 @@ function renderViewer() {
     viewerFit = new FitAddon.FitAddon();
     viewerTerm.loadAddon(viewerFit);
     viewerTerm.open(host);
+    viewerTerm.attachCustomKeyEventHandler((e) => !handleScrollKey(viewerTerm, e));
     requestAnimationFrame(() => {
       viewerFit.fit();
       viewerTerm.write(v.data.raw || 'No recording found for this session.');
@@ -1238,6 +1363,10 @@ function renderStatus() {
     $('#st-branch').textContent = rec && rec.branch ? `⎇ ${rec.branch}` : '';
     $('#st-session').textContent = rec && rec.nativeId ? rec.nativeId.slice(0, 8) : tab.agent === 'shell' ? '' : 'session: detecting…';
   }
+  const acctEl = $('#st-account');
+  const showAcct = !!tab && multiAccount(tab.agent);
+  acctEl.classList.toggle('hidden', !showAcct);
+  acctEl.textContent = showAcct ? `⇄ ${tabAccount(tab).name}` : '';
   const ws = state.workspace;
   const st = $('#st-ws');
   if (ws && ws.roots && ws.roots.length) {
@@ -1252,6 +1381,20 @@ function renderStatus() {
 $('#st-cwd').onclick = () => { const t = activeTab(); if (t && t.cwd) ipc.openPath(t.cwd); };
 $('#st-session').onclick = () => { const t = activeTab(); if (t && t.record) copyResumeCommand(t.record); };
 $('#st-ws').onclick = () => openSetup();
+$('#st-account').onclick = (e) => {
+  const tab = activeTab();
+  if (!tab) return;
+  e.stopPropagation();
+  const r = e.currentTarget.getBoundingClientRect();
+  showContextMenu(r.left, r.top - 8, [
+    ...accountMenuItems(tab).slice(1),
+    '-',
+    { label: 'Manage accounts…', run: () => openSetup() },
+  ]);
+  // Open upwards from the status bar.
+  const ctx = $('#ctx');
+  ctx.style.top = Math.max(8, r.top - ctx.offsetHeight - 4) + 'px';
+};
 
 // ---------------------------------------------------------------------------
 // modal & settings
@@ -1355,6 +1498,107 @@ const AGENT_HINTS = {
   shell: 'Plain shell tab: powershell.exe, pwsh.exe or cmd.exe',
 };
 
+// The accounts of one agent in Setup. Claude / Codex: a name and a config folder each;
+// Cursor: a name and an API key. The radio button picks the account new tabs use.
+function accountEditor(agent, st, cfg) {
+  const isDir = st.accountKind === 'dir';
+  const list = (cfg.accounts && cfg.accounts.length ? cfg.accounts : [{ id: 'default', name: 'Default', configDir: '' }])
+    .map((x) => ({ id: x.id, name: x.name, configDir: x.configDir || '', hasKey: !!x.hasKey, apiKey: '', clearKey: false }));
+  let active = list.some((x) => x.id === cfg.activeAccount) ? cfg.activeAccount : list[0].id;
+  const wrap = el('div', { class: 'acct-list' });
+  const newId = () => `acct-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+  const render = () => {
+    wrap.replaceChildren(...list.map((x, i) => {
+      const radio = el('input', { type: 'radio', name: `acct-${agent}`, title: 'New tabs use this account', checked: x.id === active });
+      radio.addEventListener('change', () => { active = x.id; });
+      const name = el('input', { class: 'acct-name', value: x.name, placeholder: `Account ${i + 1}`, spellcheck: 'false', title: 'Name shown on tabs and in the status bar' });
+      name.addEventListener('input', () => { x.name = name.value; });
+      let detail;
+      if (isDir) {
+        const dir = el('input', { class: 'grow', value: x.configDir, placeholder: `Normal login (${st.defaultConfigDir})`, spellcheck: 'false' });
+        dir.addEventListener('input', () => { x.configDir = dir.value; });
+        const browse = el('button', {
+          class: 'small-btn',
+          onclick: async () => {
+            const d = await ipc.pickFolder({ title: `${agentLabel(agent)} account folder (${st.configEnv})`, defaultPath: x.configDir || st.defaultConfigDir });
+            if (d) dir.value = x.configDir = d;
+          },
+        }, 'Browse…');
+        detail = [dir, browse];
+      } else {
+        const key = el('input', {
+          class: 'grow', type: 'password', value: x.apiKey, spellcheck: 'false', autocomplete: 'off',
+          placeholder: x.hasKey ? 'Key saved (type to replace)' : 'No key: normal login',
+        });
+        key.addEventListener('input', () => { x.apiKey = key.value; });
+        const clear = x.hasKey
+          ? el('button', { class: 'small-btn', title: 'Forget the saved key', onclick: () => { x.hasKey = false; x.clearKey = true; x.apiKey = ''; render(); } }, 'Clear')
+          : null;
+        detail = [key, clear];
+      }
+      const remove = list.length > 1
+        ? el('button', {
+            class: 'small-btn',
+            title: isDir ? 'Remove this account (its folder and conversations stay on disk)' : 'Remove this account',
+            onclick: () => {
+              list.splice(i, 1);
+              if (active === x.id) active = list[0].id;
+              render();
+            },
+          }, '✕')
+        : null;
+      return el('div', { class: 'acct-row' }, radio, name, ...detail, remove);
+    }));
+  };
+  const add = el('button', {
+    class: 'small-btn',
+    onclick: () => {
+      const n = list.length + 1;
+      list.push({ id: newId(), name: `Account ${n}`, configDir: isDir ? `${st.defaultConfigDir}-${n}` : '', hasKey: false, apiKey: '', clearKey: false });
+      render();
+    },
+  }, 'Add account');
+  render();
+
+  const help = isDir
+    ? `Each account is a config folder (${st.configEnv}) with its own login and conversations. An empty folder is your normal login. Sign in once in a tab of a new account. The selected account is used by new tabs. To switch a tab, press Ctrl+Shift+A or click the account in the status bar. Its conversation is copied to the other account and resumed there.`
+    : `Each account is a Cursor API key (${st.keyEnv}, from the Cursor dashboard → Integrations). An account with no key is your normal login. Keys are stored encrypted for your Windows user. The selected account is used by new tabs. To switch a tab, press Ctrl+Shift+A or click the account in the status bar.`;
+  const node = el('div', { class: 'field' }, el('span', {}, 'Accounts'), wrap, el('div', { class: 'row' }, add), el('div', { class: 'help' }, help));
+
+  const normDir = (p) => (p.trim() || st.defaultConfigDir || '').replace(/[\\/]+$/, '').toLowerCase();
+  return {
+    node,
+    // Why these accounts cannot be saved, or null.
+    problem() {
+      if (isDir) {
+        const seen = new Map();
+        for (const x of list) {
+          const k = normDir(x.configDir);
+          if (seen.has(k)) return `"${seen.get(k)}" and "${x.name}" use the same folder`;
+          seen.set(k, x.name);
+        }
+      } else {
+        const noKey = list.filter((x) => !x.hasKey && !x.apiKey.trim());
+        if (noKey.length > 1) return `only one account can be without an API key ("${noKey[0].name}", "${noKey[1].name}")`;
+      }
+      return null;
+    },
+    value() {
+      return {
+        accounts: list.map((x, i) => ({
+          id: x.id,
+          name: x.name.trim() || `Account ${i + 1}`,
+          configDir: isDir ? x.configDir.trim() : '',
+          ...(x.apiKey.trim() ? { apiKey: x.apiKey.trim() } : {}),
+          ...(x.clearKey ? { clearKey: true } : {}),
+        })),
+        activeAccount: active,
+      };
+    },
+  };
+}
+
 async function openSetup({ first = false } = {}) {
   const info = await ipc.setupInfo();
   const s = info.settings;
@@ -1426,27 +1670,10 @@ async function openSetup({ first = false } = {}) {
         }
       },
     }, 'Browse…');
-    let configDir = null;
-    let accountField = null;
-    if (st.configEnv) {
-      configDir = el('input', { value: cfg.configDir || '', placeholder: `Default: ${st.defaultConfigDir}`, spellcheck: 'false' });
-      const browseDir = el('button', {
-        class: 'small-btn',
-        onclick: async () => {
-          const d = await ipc.pickFolder({ title: `${agentLabel(a)} account folder (${st.configEnv})`, defaultPath: configDir.value || st.defaultConfigDir });
-          if (d) configDir.value = d;
-        },
-      }, 'Browse…');
-      accountField = el('label', { class: 'field' },
-        el('span', {}, `Account folder (${st.configEnv})`),
-        el('div', { class: 'row' }, configDir, browseDir),
-        el('div', { class: 'help' }, 'Empty: your normal login. Another folder runs this agent under a separate account (sign in once in a tab); its conversations and history stay with that folder.'));
-    } else if (a === 'cursor') {
-      accountField = el('div', { class: 'help' }, 'Cursor Agent uses its normal login (no separate account folder).');
-    }
+    const accounts = st.accountKind ? accountEditor(a, st, cfg) : null;
     const body = el('div', { class: 'agent-body' },
       el('label', { class: 'field' }, el('span', {}, 'Command'), el('div', { class: 'row' }, command, browseCmd)),
-      accountField);
+      accounts && accounts.node);
     const card = el('div', { class: 'agent-card', style: `--c:${agentColor(a)}` },
       el('div', { class: 'agent-head' },
         el('label', { class: 'check' }, enabled, el('span', { class: 'badge' }, BADGE[a]), el('b', {}, agentLabel(a))),
@@ -1456,7 +1683,7 @@ async function openSetup({ first = false } = {}) {
     const sync = () => card.classList.toggle('off', !enabled.checked);
     enabled.addEventListener('change', sync);
     sync();
-    rows[a] = { enabled, command, configDir, setFound };
+    rows[a] = { enabled, command, accounts, setFound };
     return card;
   });
 
@@ -1474,18 +1701,28 @@ async function openSetup({ first = false } = {}) {
   const save = async () => {
     const agents = {};
     for (const a of AGENT_KEYS) {
-      agents[a] = {
-        enabled: rows[a].enabled.checked,
-        command: rows[a].command.value.trim(),
-        configDir: rows[a].configDir ? rows[a].configDir.value.trim() : '',
-      };
+      agents[a] = { enabled: rows[a].enabled.checked, command: rows[a].command.value.trim() };
+      if (rows[a].accounts) {
+        const problem = rows[a].accounts.problem();
+        if (problem && agents[a].enabled) {
+          toast(`${agentLabel(a)}: ${problem}`);
+          return false;
+        }
+        Object.assign(agents[a], rows[a].accounts.value());
+      }
     }
     if (!AGENT_KEYS.some((a) => agents[a].enabled)) {
       toast('Enable at least one agent');
       return false;
     }
     const startupTabs = (state.settings.startupTabs || []).filter((a) => agents[a].enabled);
-    const res = await ipc.saveSettings({ setupDone: true, workspaces: roots, agents, startupTabs });
+    let res;
+    try {
+      res = await ipc.saveSettings({ setupDone: true, workspaces: roots, agents, startupTabs });
+    } catch (err) {
+      toast(err.message);
+      return false;
+    }
     applySaved(res);
     if (first && !state.tabs.length) openStartupTabs();
     return true;
@@ -1524,7 +1761,7 @@ function saveStateNow() {
   clearTimeout(saveTimer);
   // Tabs that were never activated have no record yet; keep them as agent + folder.
   const tabs = state.tabs.map((t) =>
-    t.record ? { recordId: t.record.id, agent: t.agent, chain: t.chain } : { agent: t.agent, cwd: t.cwd, mode: t.mode }
+    t.record ? { recordId: t.record.id, agent: t.agent, chain: t.chain } : { agent: t.agent, cwd: t.cwd, mode: t.mode, accountId: t.accountId }
   );
   const activeIndex = Math.max(0, state.tabs.findIndex((t) => t.id === state.activeId));
   return ipc.saveState({ tabs, activeIndex }).catch(() => {});
@@ -1633,6 +1870,7 @@ async function boot() {
         record: t.record,
         chain: t.chain,
         mode: t.record ? 'resume' : t.mode || 'new',
+        accountId: t.record ? null : t.accountId,
         activate: false,
       })
     );

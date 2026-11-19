@@ -1,7 +1,7 @@
 {
   "name": "ni-agent-terminal",
   "productName": "NI Agent Terminal",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Multi-tab terminal for Claude Code, Codex and Cursor Agent with per-folder, per-agent session history.",
   "main": "src/main.js",
   "author": "NI",

@@ -298,6 +298,66 @@ function cursorTitle(nativeId) {
 }
 
 // ---------------------------------------------------------------------------
+// Moving a conversation between accounts
+// ---------------------------------------------------------------------------
+
+// The rollout file of a Codex conversation, newest day folders first.
+function codexSessionFile(id, dir) {
+  const base = path.join(codexBase(dir), 'sessions');
+  const names = (p) => safeReaddir(p).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
+  for (const y of names(base)) {
+    for (const m of names(path.join(base, y))) {
+      for (const d of names(path.join(base, y, m))) {
+        const day = path.join(base, y, m, d);
+        const hit = safeReaddir(day).find((e) => e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith(`${id}.jsonl`));
+        if (hit) return path.join(day, hit.name);
+      }
+    }
+  }
+  return null;
+}
+
+// Copies `src` to the same place under `toBase`, unless the copy there is already newer.
+function copyNewer(src, fromBase, toBase) {
+  const dest = path.join(toBase, path.relative(fromBase, src));
+  const a = safeStat(src);
+  const b = safeStat(dest);
+  if (!a || (b && b.mtimeMs >= a.mtimeMs)) return false;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  if (a.isDirectory()) fs.cpSync(src, dest, { recursive: true, force: true });
+  else fs.copyFileSync(src, dest);
+  return true;
+}
+
+// Copies a conversation from one account's store (config folder, null for the
+// default) to another's, so the other account can resume it. Returns whether the
+// conversation was found. Cursor keeps one store for every account: nothing to copy.
+function copyConversation(agentId, cwd, nativeId, fromDir, toDir) {
+  if (!nativeId) return false;
+  if (agentId === 'claude') {
+    const file = claudeSessionFile(cwd, nativeId, fromDir);
+    if (!file) return false;
+    const fromBase = claudeBase(fromDir);
+    const toBase = claudeBase(toDir);
+    if (samePath(fromBase, toBase)) return true;
+    copyNewer(file, fromBase, toBase);
+    // Subagent transcripts and large tool results live next to it in <id>/.
+    const side = file.slice(0, -'.jsonl'.length);
+    if (safeStat(side)) copyNewer(side, fromBase, toBase);
+    return true;
+  }
+  if (agentId === 'codex') {
+    const file = codexSessionFile(nativeId, fromDir);
+    if (!file) return false;
+    const fromBase = codexBase(fromDir);
+    const toBase = codexBase(toDir);
+    if (!samePath(fromBase, toBase)) copyNewer(file, fromBase, toBase);
+    return true;
+  }
+  return agentId === 'cursor';
+}
+
+// ---------------------------------------------------------------------------
 
 // Conversations of an agent in a folder that were written to since `since`:
 // [{ id, birth, t, title? }], most recently written first.
@@ -322,6 +382,7 @@ module.exports = {
   listSessions,
   claudeLiveSession,
   claudeSessionExists,
+  copyConversation,
   nativeTitle,
   samePath,
   normPath,

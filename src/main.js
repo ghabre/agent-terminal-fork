@@ -1,13 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, safeStorage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const pty = require('node-pty');
 
 const { AGENTS, buildEnv, resolveLaunch, locate, agentEnv } = require('./agents');
-const { listSessions, claudeLiveSession, claudeSessionExists, nativeTitle, samePath, normPath } = require('./sessions');
+const { listSessions, claudeLiveSession, claudeSessionExists, copyConversation, nativeTitle, samePath, normPath } = require('./sessions');
 const { History } = require('./history');
 const workspace = require('./workspace');
 
@@ -25,10 +25,10 @@ const settingsFile = path.join(userData, 'settings.json');
 const stateFile = path.join(userData, 'state.json');
 
 const DEFAULT_AGENTS = {
-  claude: { enabled: true, command: '', configDir: '' },
-  codex: { enabled: true, command: '', configDir: '' },
-  cursor: { enabled: true, command: '', configDir: '' },
-  shell: { enabled: true, command: '', configDir: '' },
+  claude: { enabled: true, command: '' },
+  codex: { enabled: true, command: '' },
+  cursor: { enabled: true, command: '' },
+  shell: { enabled: true, command: '' },
 };
 
 const DEFAULT_SETTINGS = {
@@ -73,11 +73,70 @@ function normalizeSettings(s) {
     agents[id] = {
       enabled: a.enabled !== false,
       command: typeof a.command === 'string' ? a.command.trim() : '',
-      configDir: typeof a.configDir === 'string' ? a.configDir.trim() : '',
+      ...normalizeAccounts(id, a),
     };
   }
   out.agents = agents;
   return out;
+}
+
+// Accounts of one agent: [{ id, name, configDir, apiKeyEnc? }] plus the one new tabs
+// use. A Claude / Codex account is a config folder ('' = the normal login); a Cursor
+// account is an API key, kept encrypted (apiKeyEnc), with no key = the normal login.
+function normalizeAccounts(agentId, a) {
+  const kind = AGENTS[agentId].accountKind;
+  if (!kind) return { accounts: [], activeAccount: null };
+  const seen = new Set();
+  const freshId = () => `acct-${crypto.randomUUID().slice(0, 8)}`;
+  let accounts = (Array.isArray(a.accounts) ? a.accounts : [])
+    .filter((x) => x && typeof x === 'object')
+    .map((x, i) => {
+      let id = typeof x.id === 'string' && x.id.trim() ? x.id.trim() : i === 0 ? 'default' : freshId();
+      if (seen.has(id)) id = freshId();
+      seen.add(id);
+      const acct = {
+        id,
+        name: (typeof x.name === 'string' && x.name.trim()) || (i === 0 ? 'Default' : `Account ${i + 1}`),
+        configDir: kind === 'dir' && typeof x.configDir === 'string' ? x.configDir.trim() : '',
+      };
+      if (kind === 'key' && typeof x.apiKeyEnc === 'string' && x.apiKeyEnc) acct.apiKeyEnc = x.apiKeyEnc;
+      return acct;
+    });
+  let active = a.activeAccount;
+  if (!accounts.length) {
+    accounts = [{ id: 'default', name: 'Default', configDir: '' }];
+    // 1.2 had one account folder per agent: keep it as a second account, still in use.
+    const legacy = kind === 'dir' && typeof a.configDir === 'string' ? a.configDir.trim() : '';
+    if (legacy) {
+      accounts.push({ id: 'account-2', name: path.basename(legacy) || 'Account 2', configDir: legacy });
+      active = 'account-2';
+    }
+  }
+  if (!accounts.some((x) => x.id === active)) active = accounts[0].id;
+  return { accounts, activeAccount: active };
+}
+
+// Settings as the window sees them: API keys are never sent, only whether one is saved.
+function publicSettings() {
+  const agents = {};
+  for (const [id, a] of Object.entries(settings.agents)) {
+    agents[id] = { ...a, accounts: (a.accounts || []).map(({ apiKeyEnc, ...x }) => ({ ...x, hasKey: !!apiKeyEnc })) };
+  }
+  return { ...settings, agents };
+}
+
+function encryptKey(key) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows cannot encrypt the API key here, so it was not saved.');
+  return safeStorage.encryptString(key).toString('base64');
+}
+
+function decryptKey(enc) {
+  if (!enc) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'));
+  } catch (_) {
+    return null;
+  }
 }
 
 let settings = normalizeSettings(readJson(settingsFile, {}));
@@ -91,7 +150,30 @@ function workspaceFor(cwd) {
 }
 
 function agentCfg(id) {
-  return settings.agents[id] || DEFAULT_AGENTS[id] || { enabled: true, command: '', configDir: '' };
+  return settings.agents[id] || { enabled: true, command: '', accounts: [], activeAccount: null };
+}
+
+const sameDir = (a, b) => (!a && !b) || (!!a && !!b && samePath(a, b));
+
+function accountById(agentId, accountId) {
+  return (agentCfg(agentId).accounts || []).find((x) => x.id === accountId) || null;
+}
+
+// The account new tabs of this agent use.
+function activeAccount(agentId) {
+  const cfg = agentCfg(agentId);
+  return accountById(agentId, cfg.activeAccount) || (cfg.accounts || [])[0] || null;
+}
+
+// The account a conversation runs under: the one it was started with, else (records
+// from before accounts, or a removed account) the one with the same config folder.
+function accountForRecord(rec) {
+  const kind = rec && AGENTS[rec.agent] && AGENTS[rec.agent].accountKind;
+  if (!kind) return null;
+  const byId = rec.accountId && accountById(rec.agent, rec.accountId);
+  if (byId) return byId;
+  if (kind === 'dir') return (agentCfg(rec.agent).accounts || []).find((x) => sameDir(x.configDir, rec.configDir)) || null;
+  return null;
 }
 
 function agentStatus() {
@@ -107,7 +189,9 @@ function agentStatus() {
       available: !!found,
       path: found,
       defaultCommand: a.command,
+      accountKind: a.accountKind || null,
       configEnv: a.configEnv || null,
+      keyEnv: a.keyEnv || null,
       defaultConfigDir: a.defaultConfigDir || null,
     };
   });
@@ -125,7 +209,14 @@ function send(channel, payload) {
 function publicRecord(rec) {
   if (!rec) return null;
   const roots = [...settings.workspaces, ...(rec.workspaceRoot ? [rec.workspaceRoot] : [])];
-  return { ...rec, cwdLabel: workspace.labelFor(roots, rec.cwd), branch: workspace.readBranch(rec.cwd) };
+  const acct = accountForRecord(rec);
+  return {
+    ...rec,
+    cwdLabel: workspace.labelFor(roots, rec.cwd),
+    branch: workspace.readBranch(rec.cwd),
+    accountId: acct ? acct.id : rec.accountId || null,
+    accountName: acct ? acct.name : rec.configDir ? path.basename(rec.configDir) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +290,7 @@ function switchConversation(tabId, s, rec, target) {
     // First sight of the conversation, or the earlier one was empty: fill it in.
     next = history.update(rec.id, { nativeId: target.id, title: rec.nativeId ? null : rec.title });
   } else {
-    next = history.create({ agent: s.agent, cwd: rec.cwd, nativeId: target.id, workspaceRoot: rec.workspaceRoot, configDir: rec.configDir, parentId: rec.id });
+    next = history.create({ agent: s.agent, cwd: rec.cwd, nativeId: target.id, workspaceRoot: rec.workspaceRoot, configDir: rec.configDir, accountId: rec.accountId, parentId: rec.id });
     history.endRun(rec.id);
     history.beginRun(next.id, 'new conversation in this tab', { switched: true });
     history.movePrompts(rec.id, next.id, target.birth - 1500);
@@ -284,7 +375,7 @@ function trackSessions() {
 }
 setInterval(trackSessions, TRACK_MS);
 
-function startPty({ tabId, agent, cwd, recordId, mode, cols, rows }) {
+function startPty({ tabId, agent, cwd, recordId, mode, accountId, cols, rows }) {
   if (!AGENTS[agent]) throw new Error(`Unknown agent ${agent}`);
   stopPty(tabId);
 
@@ -308,8 +399,13 @@ function startPty({ tabId, agent, cwd, recordId, mode, cols, rows }) {
     const nativeId = agent === 'claude' && runMode === 'new' ? crypto.randomUUID() : null;
     // The account folder is kept with the record: the conversation lives in that
     // folder's store, so resuming it later must use the same one.
-    rec = history.create({ agent, cwd, nativeId, workspaceRoot: workspaceFor(cwd), configDir: cfg.configDir || null });
+    const acct = accountById(agent, accountId) || activeAccount(agent);
+    rec = history.create({ agent, cwd, nativeId, workspaceRoot: workspaceFor(cwd), configDir: (acct && acct.configDir) || null, accountId: acct ? acct.id : null });
   }
+  // Cursor's account is an API key; a record whose account was removed uses the current one.
+  const keyAcct = AGENTS[agent].accountKind === 'key' ? accountForRecord(rec) || activeAccount(agent) : null;
+  const apiKey = keyAcct ? decryptKey(keyAcct.apiKeyEnc) : null;
+  if (keyAcct && keyAcct.apiKeyEnc && !apiKey) throw new Error(`The API key of ${AGENTS[agent].label} account "${keyAcct.name}" cannot be read. Enter it again in Setup.`);
   if (!fs.existsSync(cwd)) throw new Error(`Working folder no longer exists: ${cwd}`);
   if (rec.configDir && !fs.existsSync(rec.configDir)) fs.mkdirSync(rec.configDir, { recursive: true });
 
@@ -322,7 +418,7 @@ function startPty({ tabId, agent, cwd, recordId, mode, cols, rows }) {
     NI_WORKSPACE: root || '',
     NI_AGENT_TERMINAL: '1',
     NI_AGENT_TERMINAL_SESSION: rec.id,
-    ...agentEnv(agent, rec.configDir),
+    ...agentEnv(agent, rec.configDir, apiKey),
   });
   const launch = resolveLaunch(agent, runMode, rec.nativeId, settings.extraArgs[agent], env, cfg.command);
 
@@ -349,6 +445,8 @@ function startPty({ tabId, agent, cwd, recordId, mode, cols, rows }) {
     buf: '',
     flushTimer: null,
   };
+  let markExited;
+  s.exited = new Promise((resolve) => { markExited = resolve; });
   sessions.set(tabId, s);
   history.beginRun(rec.id, launch.display);
 
@@ -370,6 +468,7 @@ function startPty({ tabId, agent, cwd, recordId, mode, cols, rows }) {
   });
 
   proc.onExit(({ exitCode }) => {
+    markExited();
     if (SMOKE_SHOT) console.log(`[${process.uptime().toFixed(2)}s pty ${tabId}] exit ${exitCode}`);
     if (sessions.get(tabId) !== s) return;
     if (s.flushTimer) {
@@ -386,15 +485,46 @@ function startPty({ tabId, agent, cwd, recordId, mode, cols, rows }) {
   return { record: publicRecord(rec), display: launch.display, mode: runMode };
 }
 
+// Resolves once the process has exited (or after a few seconds).
 function stopPty(tabId) {
   const s = sessions.get(tabId);
-  if (!s) return;
+  if (!s) return Promise.resolve();
   sessions.delete(tabId);
   clearTimeout(s.flushTimer);
   history.endRun(s.recordId, null);
   try {
     s.pty.kill();
   } catch (_) { /* already exited */ }
+  return Promise.race([s.exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+}
+
+// Moves a conversation to another account of its agent: the tab's process is stopped,
+// the conversation is copied into that account's store (Claude, Codex), and the record
+// follows the account, so the next start resumes it there. That account also becomes
+// the one new tabs of this agent use.
+async function switchAccount({ tabId, recordId, accountId }) {
+  const s = tabId ? sessions.get(tabId) : null;
+  const rec = history.get(s ? s.recordId : recordId);
+  if (!rec) throw new Error('Session not found');
+  const agent = AGENTS[rec.agent];
+  if (!agent.accountKind) throw new Error(`${agent.label} has no accounts`);
+  const acct = accountById(rec.agent, accountId);
+  if (!acct) throw new Error('That account no longer exists. Check Setup.');
+  for (const [id, other] of sessions) {
+    if (id !== tabId && other.recordId === rec.id) throw new Error('This conversation is running in another tab. Switch that tab instead.');
+  }
+  if (s) await stopPty(tabId);
+  let copied = true;
+  if (agent.accountKind === 'dir' && !sameDir(rec.configDir, acct.configDir)) {
+    if (acct.configDir) fs.mkdirSync(acct.configDir, { recursive: true });
+    copied = !rec.nativeId || copyConversation(rec.agent, rec.cwd, rec.nativeId, rec.configDir, acct.configDir || null);
+  }
+  history.update(rec.id, { accountId: acct.id, configDir: agent.accountKind === 'dir' ? acct.configDir || null : rec.configDir });
+  if (settings.agents[rec.agent].activeAccount !== acct.id) {
+    settings.agents[rec.agent].activeAccount = acct.id;
+    writeJson(settingsFile, settings);
+  }
+  return { record: publicRecord(rec), settings: publicSettings(), copied };
 }
 
 // ---------------------------------------------------------------------------
@@ -424,7 +554,7 @@ handle('app:init', () => {
     : [];
   return {
     version: app.getVersion(),
-    settings,
+    settings: publicSettings(),
     workspace: workspace.describe(settings.workspaces),
     agents: agentStatus(),
     restore,
@@ -434,7 +564,8 @@ handle('app:init', () => {
 });
 
 handle('pty:start', (opts) => startPty(opts));
-handle('pty:kill', (tabId) => stopPty(tabId));
+handle('pty:kill', (tabId) => { stopPty(tabId); });
+handle('pty:switchAccount', (opts) => switchAccount(opts || {}));
 ipcMain.on('pty:write', (_e, { tabId, data }) => {
   const s = sessions.get(tabId);
   if (SMOKE_SHOT) console.log(`[${process.uptime().toFixed(2)}s pty ${tabId}] write ${JSON.stringify(data)}`);
@@ -467,14 +598,19 @@ function importable(cwd) {
   for (const agent of ['claude', 'codex', 'cursor']) {
     const cfg = agentCfg(agent);
     if (!cfg.enabled) continue;
-    // Look in the default store and in the account folder set in Setup.
-    for (const dir of [...new Set([null, cfg.configDir || null])]) {
+    // Look in the default store and in every account's folder.
+    const kind = AGENTS[agent].accountKind;
+    const dirs = kind === 'dir'
+      ? [null, ...(cfg.accounts || []).map((x) => x.configDir || null)].filter((d, i, all) => all.findIndex((o) => sameDir(o, d)) === i)
+      : [null];
+    for (const dir of dirs) {
+      const acct = kind === 'dir' ? (cfg.accounts || []).find((x) => sameDir(x.configDir, dir)) : null;
       for (const c of listSessions(agent, cwd, since, dir)) {
         if (history.findByNative(agent, c.id) || liveTabOf(agent, c.id, null) || out.some((x) => x.agent === agent && x.id === c.id)) continue;
         const title = nativeTitle(agent, cwd, c.id, dir) || c.title || null;
         // A Claude session holding nothing but a /clear has no title to show.
         if (agent === 'claude' && !title) continue;
-        out.push({ agent, id: c.id, title, birth: c.birth, t: c.t, configDir: dir });
+        out.push({ agent, id: c.id, title, birth: c.birth, t: c.t, configDir: dir, accountId: acct ? acct.id : null });
       }
     }
   }
@@ -491,6 +627,7 @@ handle('history:import', (cwd) => {
       title: c.title,
       workspaceRoot: workspaceFor(cwd),
       configDir: c.configDir,
+      accountId: c.accountId,
       imported: true,
       createdAt: Math.min(c.birth || c.t, c.t),
     });
@@ -540,17 +677,32 @@ handle('history:export', async (id) => {
 handle('settings:save', (patch) => {
   const p = patch || {};
   const agents = { ...settings.agents };
-  for (const [id, a] of Object.entries(p.agents || {})) agents[id] = { ...agents[id], ...a };
+  for (const [id, a] of Object.entries(p.agents || {})) {
+    if (!agents[id]) continue;
+    const next = { ...agents[id], ...a };
+    if (Array.isArray(a.accounts)) {
+      // A Cursor key arrives as plain apiKey (new or replaced) or as clearKey; an
+      // account sent with neither keeps the key it has.
+      next.accounts = a.accounts.map((x) => {
+        const old = (agents[id].accounts || []).find((o) => o.id === x.id) || {};
+        const acct = { id: x.id, name: x.name, configDir: x.configDir };
+        if (typeof x.apiKey === 'string' && x.apiKey.trim()) acct.apiKeyEnc = encryptKey(x.apiKey.trim());
+        else if (!x.clearKey && old.apiKeyEnc) acct.apiKeyEnc = old.apiKeyEnc;
+        return acct;
+      });
+    }
+    agents[id] = next;
+  }
   settings = normalizeSettings({ ...settings, ...p, agents, extraArgs: { ...settings.extraArgs, ...(p.extraArgs || {}) } });
   writeJson(settingsFile, settings);
-  return { settings, workspace: workspace.describe(settings.workspaces), agents: agentStatus() };
+  return { settings: publicSettings(), workspace: workspace.describe(settings.workspaces), agents: agentStatus() };
 });
 
 // What Setup needs: the current choices, folders worth suggesting, and where each
 // agent's command resolves to.
 handle('setup:info', () => {
   const suggested = settings.workspaces.length ? [] : workspace.suggestRoots(exeDir);
-  return { settings, suggested, agents: agentStatus(), home: workspace.home() };
+  return { settings: publicSettings(), suggested, agents: agentStatus(), home: workspace.home() };
 });
 // Resolves typed commands without saving them: { claude: 'claude', … } -> { claude: path|null, … }.
 handle('setup:locate', (commands) => {
@@ -626,10 +778,11 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  // Show right away (backgroundColor avoids a white flash). Waiting for 'ready-to-show'
+  // is unreliable: on some machines it never fires, which left a windowless instance
+  // holding the single-instance lock, so every later launch exited silently.
   if (state.maximized) win.maximize();
-  win.once('ready-to-show', () => win.show());
-  // Never leave a windowless instance holding the single-instance lock.
-  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 5000);
+  win.show();
   if (SMOKE_SHOT) {
     win.webContents.on('console-message', (_e, level, message, line, source) => console.log(`[renderer:${level}] ${message} (${source}:${line})`));
     const delay = Number(process.env.NI_TERM_SMOKE_DELAY || 12000);

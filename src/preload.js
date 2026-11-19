@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
 
   start: (opts) => call('pty:start', opts),
   kill: (tabId) => call('pty:kill', tabId),
+  switchAccount: (opts) => call('pty:switchAccount', opts),
   write: (tabId, data) => ipcRenderer.send('pty:write', { tabId, data }),
   resize: (tabId, cols, rows) => ipcRenderer.send('pty:resize', { tabId, cols, rows }),
   onData: (fn) => on('pty:data', fn),

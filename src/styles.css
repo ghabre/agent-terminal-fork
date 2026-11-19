@@ -159,6 +159,7 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
 #terminals { flex: 1; position: relative; min-width: 0; background: var(--bg-term); }
 .term-host { position: absolute; inset: 6px 4px 4px 10px; }
 .term-host.hidden-tab { visibility: hidden; }
+.term-host > .xterm, #viewer-term > .xterm { height: 100%; }
 .xterm .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 .xterm .xterm-viewport::-webkit-scrollbar { width: 10px; }
 .xterm .xterm-viewport::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 5px; border: 2px solid var(--bg-term); }
@@ -319,3 +320,13 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
   position: fixed; bottom: 36px; left: 50%; transform: translateX(-50%); z-index: 200;
   background: var(--raised); border: 1px solid var(--line-2); padding: 8px 14px; border-radius: 8px;
 }
+
+/* ---------- accounts ---------- */
+#new-menu.with-accounts { width: 430px; }
+.agent-row .acct-select { flex: none; width: 110px; padding: 3px 6px; font-size: 12px; }
+.st-account { color: var(--text); flex: none; }
+.acct-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.acct-row { display: flex; align-items: center; gap: 6px; }
+.modal-card .acct-row input.acct-name { width: 130px; flex: none; }
+.modal-card .acct-row input.grow { width: auto; }
+.acct-row input[type="radio"] { width: auto; margin: 0 2px; accent-color: var(--c); flex: none; }

@@ -1,9 +1,10 @@
 'use strict';
 // Agent definitions, environment and command resolution.
 //
-// Each agent's command can be overridden in Setup, and Claude / Codex can be pointed
-// at a separate config folder (their own login and conversation store) through the
-// environment variable named by configEnv.
+// Each agent's command can be overridden in Setup, and each agent can have several
+// accounts. A Claude / Codex account is a config folder (its own login and
+// conversation store), passed through the environment variable named by configEnv.
+// Cursor Agent keeps one config folder, so a Cursor account is an API key (keyEnv).
 
 const fs = require('fs');
 const os = require('os');
@@ -17,6 +18,7 @@ const AGENTS = {
     label: 'Claude',
     command: 'claude',
     color: '#d97757',
+    accountKind: 'dir',
     configEnv: 'CLAUDE_CONFIG_DIR',
     defaultConfigDir: path.join(HOME, '.claude'),
     // Claude accepts a caller-chosen session id, so the id is known before launch.
@@ -34,6 +36,7 @@ const AGENTS = {
     label: 'Codex',
     command: 'codex',
     color: '#10a37f',
+    accountKind: 'dir',
     configEnv: 'CODEX_HOME',
     defaultConfigDir: path.join(HOME, '.codex'),
     presetId: false,
@@ -49,6 +52,8 @@ const AGENTS = {
     label: 'Cursor',
     command: 'cursor-agent',
     color: '#7c8cff',
+    accountKind: 'key',
+    keyEnv: 'CURSOR_API_KEY',
     presetId: false,
     args(mode, nativeId) {
       if (mode === 'resume' && nativeId) return ['--resume', nativeId];
@@ -216,10 +221,14 @@ function locate(agentId, command, env) {
   return agent ? which((command || '').trim() || agent.command, env) : null;
 }
 
-// Environment for an agent running under a separate config folder (its own login).
-function agentEnv(agentId, configDir) {
+// Environment for an agent running under one of its accounts: a separate config
+// folder (Claude, Codex) or an API key (Cursor). Nothing for the normal login.
+function agentEnv(agentId, configDir, apiKey) {
   const agent = AGENTS[agentId];
-  return agent && agent.configEnv && configDir ? { [agent.configEnv]: configDir } : {};
+  const env = {};
+  if (agent && agent.configEnv && configDir) env[agent.configEnv] = configDir;
+  if (agent && agent.keyEnv && apiKey) env[agent.keyEnv] = apiKey;
+  return env;
 }
 
 module.exports = { AGENTS, buildEnv, resolveLaunch, locate, agentEnv, splitArgs };

@@ -187,7 +187,7 @@ class History {
     return [...map.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
   }
 
-  create({ agent, cwd, nativeId, title, workspaceRoot, configDir, parentId, imported, createdAt }) {
+  create({ agent, cwd, nativeId, title, workspaceRoot, configDir, accountId, parentId, imported, createdAt }) {
     const now = Date.now();
     const rec = {
       id: crypto.randomUUID(),
@@ -197,6 +197,8 @@ class History {
       workspaceRoot: workspaceRoot || null,
       // Agent config folder (CLAUDE_CONFIG_DIR / CODEX_HOME) when not the default one.
       configDir: configDir || null,
+      // The Setup account the conversation runs under (see settings.agents[agent].accounts).
+      accountId: accountId || null,
       nativeId: nativeId || null,
       title: title || null,
       customTitle: null,

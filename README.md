@@ -4,8 +4,8 @@ A Windows multi-tab terminal for **Claude Code**, **Codex** and **Cursor Agent**
 
 ## Run
 
-- `distNI-Agent-Terminal-1.2.0-portable.exe`: single file, no install.
-- `distNI-Agent-Terminal-1.2.0-setup.exe`: per-user installer with Start menu entry.
+- `distNI-Agent-Terminal-1.2.1-portable.exe`: single file, no install.
+- `distNI-Agent-Terminal-1.2.1-setup.exe`: per-user installer with Start menu entry.
 
 ## Setup
 
@@ -16,7 +16,7 @@ On first start a Setup screen asks for:
   - **On / off**: switched-off agents are hidden from menus and shortcuts.
   - **Command**: a name on `PATH` (default `claude`, `codex`, `cursor-agent`, `powershell.exe`) or a full path to an `.exe` / `.cmd`. Setup shows where each resolves. `%APPDATA%
 pm`, `%LOCALAPPDATA%cursor-agent` and `~/.local/bin` are searched as well.
-  - **Account folder** (Claude, Codex): a separate config folder, passed as `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, so the agent runs under another login with its own conversation store. Leave it empty for your normal login. Each history record remembers the folder it was created with, so resuming it and following its `/clear` / `/new` keep using the right store. Cursor Agent has no such option and uses its normal login.
+  - **Accounts**: one or more logins per agent, e.g. *Personal* and *Work*. The selected one is used by new tabs. See [Accounts](#accounts).
 
 Change all of this later in **Settings → Workspaces & agents**, or click *workspace* in the status bar. If you upgrade from 1.1, the old `ni-agentic-development` folder is carried over as the first workspace folder, and Setup is shown once.
 
@@ -51,6 +51,19 @@ Resuming a record runs `claude --resume <id>`, `codex resume <id>` or `cursor-ag
 
 Open tabs are saved on close and resumed on the next start. A tab only starts its agent when it is first shown.
 
+## Accounts
+
+Each of Claude, Codex and Cursor can have several accounts (Setup → *Accounts* → *Add account*):
+
+- **Claude, Codex**: each account is a config folder, passed as `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, with its own login and conversation store. An empty folder is your normal login. *Add account* proposes `~/.claude-2` / `~/.codex-2`; sign in once in a tab of that account.
+- **Cursor**: Cursor Agent has a single config folder, so each account is an API key (`CURSOR_API_KEY`, from the Cursor dashboard → Integrations). An account with no key is your normal login. Keys are encrypted for your Windows user (DPAPI) and never shown again.
+
+Once an agent has more than one account, its tabs show the account name, and the new-tab menu has an account picker.
+
+**Switching a tab's account** (Ctrl+Shift+A cycles; or click the account in the status bar; or the tab's right-click menu): the agent is stopped, the conversation is copied into the other account's store, and it resumes there. Use it to carry on in the same conversation after one account hits its usage limit. The account you switch to also becomes the one new tabs use.
+
+Each history record remembers its account, so resuming it and following its `/clear` / `/new` keep using the right store. A 1.2 *Account folder* is carried over as a second account, still selected.
+
 ## Keys
 
 | Key | Action |
@@ -60,7 +73,10 @@ Open tabs are saved on close and resumed on the next start. A tab only starts it
 | Ctrl+Tab, Ctrl+PgUp/PgDn | Switch tabs (tabs can also be dragged) |
 | Ctrl+Shift+W, middle-click | Close tab |
 | Ctrl+Shift+H | History panel (*This tab* prompts / *All sessions*) |
+| Ctrl+Shift+A | Switch the tab to the agent's next account |
 | Ctrl+Shift+F | Find in terminal |
+| Ctrl+Shift+Home / End | Scroll to the beginning / end of the terminal buffer |
+| Shift+PgUp / PgDn | Scroll up / down one page |
 | Ctrl+C with selection, Ctrl+Shift+C | Copy |
 | Ctrl+V, right-click | Paste (an image-only clipboard is passed to the agent) |
 | Shift+Enter | Newline in the agent prompt |
