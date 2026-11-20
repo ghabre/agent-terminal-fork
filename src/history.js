@@ -97,7 +97,13 @@ class History {
     this._saveTimer = null;
     const tmp = this.indexFile + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify({ version: 2, records: this.records }, null, 2));
-    fs.renameSync(tmp, this.indexFile);
+    try {
+      fs.renameSync(tmp, this.indexFile);
+    } catch (e) {
+      // Windows refuses the rename while another process (the hub engine) has the index open.
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) throw e;
+      this.save();
+    }
   }
 
   save() {
