@@ -305,7 +305,6 @@ function createTab({ agent, cwd, record, mode, chain, accountId, prompt, live, a
     } else if (tab.started && (data === '\r' || data === '\n')) restartTab(tab);
   });
   term.onResize(({ cols, rows }) => tab.running && ipc.resize(tab.id, cols, rows));
-  term.onTitleChange(() => renderTabs());
   // An agent's own copy (Claude's /copy, a TUI selection) arrives as OSC 52, which xterm.js
   // ignores: put it on the clipboard. Requests to read the clipboard ('?') are refused.
   term.parser.registerOscHandler(52, (data) => {
