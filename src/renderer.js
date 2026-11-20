@@ -28,7 +28,7 @@ const state = {
   agents: {},
   tabs: [],
   activeId: null,
-  historyScope: 'tab', // 'tab' | 'folder' | 'all'
+  historyScope: 'all', // 'tab' | 'folder' | 'all'
   historyAgent: 'all',
   historyQuery: '',
   historyFolder: null, // folder picked in the Folder view; null follows the active tab
