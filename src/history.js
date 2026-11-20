@@ -165,7 +165,7 @@ class History {
     const agent = typeof filter === 'string' ? filter : filter.agent;
     const key = filter.cwd ? folderKey(filter.cwd) : null;
     const recs = this.records.filter(
-      (r) => (!agent || agent === 'all' || r.agent === agent) && (!key || (r.folder || folderKey(r.cwd)) === key)
+      (r) => (!agent || agent === 'all' || r.agent === agent) && (!key || folderKey(r.cwd) === key)
     );
     return recs.sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
   }
@@ -174,7 +174,7 @@ class History {
   folders() {
     const map = new Map();
     for (const r of this.records) {
-      const key = r.folder || folderKey(r.cwd);
+      const key = folderKey(r.cwd); // r.folder is where its files are, which a /cd does not move
       let f = map.get(key);
       if (!f) {
         f = { key, cwd: r.cwd, count: 0, agents: {}, lastActiveAt: 0 };

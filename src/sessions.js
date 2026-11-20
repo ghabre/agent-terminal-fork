@@ -109,6 +109,21 @@ function claudeSessionFile(cwd, id, dir) {
   return null;
 }
 
+// The folder a Claude conversation moved to with /cd, or null: Claude moves its file into
+// the new folder's project and records the folder as `relocatedCwd`.
+function claudeRelocated(cwd, id, dir) {
+  const file = claudeSessionFile(cwd, id, dir);
+  if (!file || path.dirname(file) === claudeProjectDir(cwd, dir)) return null;
+  let text = readTail(file, 512 * 1024);
+  if (!text.includes('"relocatedCwd"')) text = fs.readFileSync(file, 'utf8');
+  const line = text.slice(0, text.indexOf('\n', text.lastIndexOf('"relocatedCwd"')) >>> 0).split('\n').pop();
+  try {
+    return JSON.parse(line).relocatedCwd || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function claudeSessionExists(cwd, id, dir) {
   return !!id && !!claudeSessionFile(cwd, id, dir);
 }
@@ -408,6 +423,7 @@ module.exports = {
   claudePids,
   claudeFindPid,
   claudeSessionExists,
+  claudeRelocated,
   copyConversation,
   nativeTitle,
   samePath,

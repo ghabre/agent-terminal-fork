@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const pty = require('node-pty');
 
 const { AGENTS, buildEnv, resolveLaunch, agentArgs, locate, agentEnv } = require('./agents');
-const { listSessions, claudeLive, claudePids, claudeFindPid, claudeSessionExists, copyConversation, nativeTitle, samePath, normPath } = require('./sessions');
+const { listSessions, claudeLive, claudePids, claudeFindPid, claudeSessionExists, claudeRelocated, copyConversation, nativeTitle, samePath, normPath } = require('./sessions');
 const { History } = require('./history');
 const { backendFor, wslDistros, shQuote } = require('./backend');
 const { Engine, ENGINE_AGENTS } = require('./engine');
@@ -425,15 +425,24 @@ function switchConversation(tabId, s, rec, target) {
   });
 }
 
+// A Claude conversation moved to another folder with /cd resumes there.
+function followRelocation(rec, b, store) {
+  const moved = rec.agent === 'claude' && rec.nativeId && claudeRelocated(b.toAgent(rec.cwd), rec.nativeId, store);
+  const cwd = moved && b.toWin(moved);
+  if (!cwd || samePath(cwd, rec.cwd) || !fs.existsSync(cwd)) return rec;
+  return history.update(rec.id, { cwd, workspaceRoot: workspaceFor(cwd) });
+}
+
 // Claude's pid file: the tab's own pid on Windows (npm shims are unwrapped), else (WSL
-// runs wsl.exe) the one claudeFindPid picks. A found pid is the tab's, so no time checks.
+// runs wsl.exe) the one claudeFindPid picks. A found pid is the tab's, so no time or
+// folder checks: it follows the conversation into another folder (/cd).
 function claudeLiveOf(tabId, s, rec) {
   if (!s.claudePid && claudeLive(s.pty.pid, s.agentCwd, s.since, s.store)) s.claudePid = s.pty.pid;
   if (!s.claudePid && s.backend.kind === 'wsl') {
     const taken = new Set([...sessions.entries()].filter(([id, o]) => id !== tabId && o.claudePid).map(([, o]) => o.claudePid));
     s.claudePid = claudeFindPid(s.agentCwd, s.store, rec.nativeId, taken, s.pidsBefore) || null;
   }
-  const live = s.claudePid && claudeLive(s.claudePid, s.agentCwd, s.claudePid === s.pty.pid ? s.since : 0, s.store);
+  const live = s.claudePid && claudeLive(s.claudePid, null, s.claudePid === s.pty.pid ? s.since : 0, s.store);
   // Its file is gone (that Claude exited inside the tab): look again.
   if (s.claudePid && !live && s.backend.kind === 'wsl') s.claudePid = null;
   return live;
@@ -452,6 +461,13 @@ function trackTab(tabId, s, listCached) {
       s.exact = true;
       const birth = s.enters.length ? s.enters[s.enters.length - 1] : now;
       if (live.sessionId !== rec.nativeId && (!rec.nativeId || enteredThisRun)) target = { id: live.sessionId, birth };
+      if (live.cwd && live.sessionId === rec.nativeId && !samePath(live.cwd, s.agentCwd)) {
+        const moved = followRelocation(rec, s.backend, s.store);
+        if (!samePath(moved.cwd, s.backend.toWin(s.agentCwd))) {
+          s.agentCwd = s.backend.toAgent(moved.cwd);
+          send('session:update', { tabId, record: publicRecord(moved) });
+        }
+      }
       if (live.status !== s.status) {
         s.status = live.status;
         send('session:status', { tabId, status: live.status });
@@ -531,6 +547,7 @@ async function startPty({ tabId, agent, cwd, recordId, mode, accountId, cols, ro
   stopPty(tabId);
 
   if (rec) {
+    rec = followRelocation(rec, b, store);
     cwd = rec.cwd;
     if (agent === 'claude' && rec.nativeId) {
       // A Claude session that never received a message was never written to disk;
