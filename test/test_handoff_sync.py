@@ -272,6 +272,43 @@ class TransferTests(unittest.TestCase):
         self.accept(result, 'codex')
         self.assertIsNone(self.transfer([self.key('claude')], 'codex')['prompt'])
 
+    def test_a_name_the_user_gave_wins_over_a_later_automatic_title(self):
+        self.append('claude', 'work')
+        self.claude_row({'type': 'custom-title', 'customTitle': 'My name'})
+        self.claude_row({'type': 'ai-title', 'aiTitle': 'Automatic'})
+        result = self.transfer([self.key('claude')], 'codex')
+        self.assertEqual(('My name', 'My name'), (result['name'], result['title']))
+
+    def test_a_name_goes_back_into_an_earlier_destination(self):
+        self.append('claude', 'work')
+        self.claude_row({'type': 'custom-title', 'customTitle': 'Old name'})
+        self.accept(self.transfer([self.key('claude')], 'codex'), 'codex')
+        with (self.root / 'session_index.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'id': IDS['codex'], 'thread_name': 'New name'}) + '\n')
+        self.append('codex', 'more work')
+        result = self.transfer([self.key('codex')], 'claude')
+        self.assertEqual(self.key('claude'), result['target']['key'])
+        self.assertEqual(('New name', 'New name'), (result['name'], result['title']))
+
+    def test_a_destination_that_has_the_name_is_not_renamed(self):
+        self.append('claude', 'work')
+        self.claude_row({'type': 'custom-title', 'customTitle': 'Same'})
+        self.accept(self.transfer([self.key('claude')], 'codex'), 'codex')
+        with (self.root / 'session_index.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'id': IDS['codex'], 'thread_name': 'Same'}) + '\n')
+        self.append('codex', 'more work')
+        result = self.transfer([self.key('codex')], 'claude')
+        self.assertEqual(('Same', None), (result['title'], result['name']))
+
+    def test_an_automatic_title_is_not_given_as_a_name(self):
+        self.append('claude', 'work')
+        self.claude_row({'type': 'ai-title', 'aiTitle': 'Automatic'})
+        self.assertIsNone(self.transfer([self.key('claude')], 'codex')['name'])
+
+    def claude_row(self, row):
+        with (Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')).open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(row) + '\n')
+
     def test_handoffs_are_named_terminal_transfer(self):
         self.append('claude', 'work')
         self.assertTrue(Path(self.transfer([self.key('claude')], 'codex')['handoff']).name.startswith('terminal-transfer-'))

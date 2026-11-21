@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('api', {
   historyRename: (id, title) => call('history:rename', { id, title }),
   historyPrompts: (ids) => call('history:prompts', ids),
   addPrompt: (tabId, text) => ipcRenderer.send('history:addPrompt', { tabId, text }),
+  nameSession: (tabId, name) => ipcRenderer.send('session:name', { tabId, name }),
   onPrompt: (fn) => on('history:prompt', fn),
   historySnapshot: (id, text, cleared) => call('history:snapshot', { id, text, cleared: !!cleared }),
   historyOpenFolder: (arg) => call('history:openFolder', arg),

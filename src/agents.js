@@ -30,6 +30,7 @@ const AGENTS = {
     // A settings file (main.js writes it), not inline JSON: quotes do not survive every launch form.
     inline: (settingsFile) => ['--settings', settingsFile],
     prompt: positional,
+    name: (name) => ['--name', name],
     args(mode, nativeId) {
       if (mode === 'resume' && nativeId) return ['--resume', nativeId];
       if (mode === 'new' && nativeId) return ['--session-id', nativeId];
@@ -206,13 +207,14 @@ function unwrapShim(cmdPath) {
 
 // The agent's arguments for a launch; `file` is the resolved command (the shell's flags depend on it).
 // `inlineSettings`: the agent's path to the Claude settings file that keeps it inline.
-function agentArgs(agentId, { mode, nativeId, extraArgs, prompt, file, inlineSettings }) {
+function agentArgs(agentId, { mode, nativeId, extraArgs, prompt, name, file, inlineSettings }) {
   const agent = AGENTS[agentId];
   if (!agent) throw new Error(`Unknown agent: ${agentId}`);
   return [
     ...(agent.inline ? agent.inline(inlineSettings) : []),
     ...agent.args(mode, nativeId, file),
     ...splitArgs(extraArgs),
+    ...(name && agent.name ? agent.name(name) : []),
     ...(prompt && agent.prompt ? agent.prompt(prompt) : []),
   ];
 }

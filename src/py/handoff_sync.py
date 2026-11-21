@@ -19,10 +19,13 @@ import collections
 from contextlib import closing
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -543,8 +546,13 @@ def plan(request):
         delta = [event for eid, event in available.items() if eid not in known
                  and not (event['role'] == 'legacy context' and event['origin'] in own_origins)]
         first = sessions[sources[0]]
-        title = target.title if target else 'combined x%d' % len(sources) if len(sources) > 1 else first.title
+        # A name the user gave the source goes with it, also back into an earlier destination.
+        names = native_names(request)
+        name = '' if len(sources) > 1 else ' '.join(re.sub(r'[\r\n"`]', ' ', names.get(first.key) or first.named).split())
+        title = name or (target.title if target else 'combined x%d' % len(sources) if len(sources) > 1 else first.title)
         result = {'status': 'ready', 'target': session_info(target, account_of) if target else None, 'title': title or 'untitled',
+                  # Given to the destination unless it already has it.
+                  'name': name if name and not (target and names.get(target.key, target.named) == name) else None,
                   'count': len(delta), 'handoff': None, 'prompt': None, 'legacy': bool(target and target.legacy_context)}
 
         def hand_over(path, count):
@@ -588,6 +596,41 @@ def plan(request):
         db.execute('INSERT INTO transfers VALUES (?, ?, ?, ?, ?, ?, ?)',
                    (tid, json.dumps(sources), target_tool, target_key, json.dumps(delta), str(path), time.time()))
         return hand_over(str(path), len(delta))
+
+
+def set_name(request):
+    """Names a Codex or OpenCode session through the CLI's own server (Claude takes --name)."""
+    sid, name, command = request['id'], request['name'], request.get('command') or request['tool']
+    if request['tool'] == 'codex':
+        home = native_path(request.get('home') or str(Path(native_path(request['codex_root'])).parent))
+        server = subprocess.Popen([command, 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  text=True, encoding='utf-8', env=dict(os.environ, CODEX_HOME=home))
+        # A server that never answers must not hold the engine forever.
+        timer = threading.Timer(60, server.kill)
+        timer.start()
+        try:
+            def call(rid, method, params):
+                server.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params}) + '\n')
+                server.stdin.flush()
+                for line in server.stdout:
+                    reply = json.loads(line)
+                    if reply.get('id') == rid:
+                        if 'error' in reply:
+                            raise ValueError('Codex could not rename the session: ' + json.dumps(reply['error']))
+                        return reply
+                raise ValueError('Codex app-server ended without answering.')
+            call(1, 'initialize', {'clientInfo': {'name': 'ni-agent-terminal', 'version': '1'}})
+            server.stdin.write(json.dumps({'jsonrpc': '2.0', 'method': 'initialized'}) + '\n')
+            call(2, 'thread/name/set', {'threadId': sid, 'name': name})
+        finally:
+            timer.cancel()
+            server.kill()
+    elif request['tool'] == 'opencode':
+        done = subprocess.run([command, 'api', 'PATCH', '/api/session/' + sid,
+                               '-d', json.dumps({'title': name})], capture_output=True, text=True, encoding='utf-8', timeout=60)
+        if done.returncode or done.stdout.startswith('HTTP '):
+            raise ValueError('OpenCode could not rename the session: ' + (done.stdout or done.stderr).strip()[:300])
+    return {'status': 'ok'}
 
 
 def native_names(request):
@@ -679,7 +722,7 @@ def main():
     if sys.argv[1] == 'preview':
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         return preview(*sys.argv[2:5])
-    mode = sys.argv[1] if sys.argv[1] in ('list', 'hide') else None
+    mode = sys.argv[1] if sys.argv[1] in ('list', 'hide', 'name') else None
     request_path, result_path = (native_path(value) for value in sys.argv[2 if mode else 1:][:2])
     with open(request_path, encoding='utf-8-sig') as stream:
         request = prepare(json.load(stream))
@@ -687,8 +730,8 @@ def main():
         if mode == 'list':
             result = {'status': 'ok', 'rows': conversations(request), 'hidden': request.get('hidden', [])}
         else:
-            result = hide(request) if mode == 'hide' else plan(request)
-    except (OSError, ValueError, sqlite3.Error) as error:
+            result = hide(request) if mode == 'hide' else set_name(request) if mode == 'name' else plan(request)
+    except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
         result = {'status': 'error', 'message': str(error)}
     with open(result_path, 'w', encoding='utf-8', newline='\n') as stream:
         json.dump(result, stream, ensure_ascii=False)

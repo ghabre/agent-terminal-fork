@@ -1,7 +1,7 @@
 'use strict';
 // The agents' own stores across agents (History → Agents, Live) and handoffs between agents,
 // through the Python scripts in src/py, run in the agents' backend (Python 3 with SQLite):
-//   handoff_sync.py     list / preview / plan / hide, with the handoff ledger, hidden list
+//   handoff_sync.py     list / preview / plan / hide / name, with the handoff ledger, hidden list
 //                       and account rule derived from the data folder (shared with hub/)
 //   board.py            running sessions, their subagents and shells (via helpers.py)
 //   helpers.py          OpenCode sessions, daily backups
@@ -84,6 +84,12 @@ class Engine {
   // The transfer planner: { status: choose | preview | pending | ready, target, title, handoff, prompt, ... }.
   plan(request) {
     return this.engine(null, request);
+  }
+
+  // Names a Codex or OpenCode session in the agent's own store (Claude is named with --name).
+  // command: the agent's resolved command; home: its account folder (Codex), else the default.
+  setName({ tool, id, name, command, home }) {
+    return this.engine('name', { tool, id, name, command, home });
   }
 
   // claude-accounts.sh: links every ~/.claude-<n> to ~/.claude (optionally creating the

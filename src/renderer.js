@@ -239,7 +239,8 @@ function activeTab() {
   return state.tabs.find((t) => t.id === state.activeId) || null;
 }
 
-// prompt: a first message the agent is launched with (a handoff), sent on the first start only.
+// prompt: a first message the agent is launched with (a handoff), sent on the first start only;
+// name: the conversation's name a handoff carries, given with it.
 // A new chat: asks which account to use when the agent has several.
 async function newTab(opts) {
   if (!multiAccount(opts.agent)) return createTab(opts);
@@ -249,7 +250,7 @@ async function newTab(opts) {
 }
 
 // live: the tab's id from before a window reload, whose agent is still running.
-function createTab({ agent, cwd, record, mode, chain, accountId, prompt, live, activate = true }) {
+function createTab({ agent, cwd, record, mode, chain, accountId, prompt, name, live, activate = true }) {
   const id = live || `t${state.nextTabId++}`;
   if (live) state.nextTabId = Math.max(state.nextTabId, Number(live.slice(1)) + 1);
   const host = el('div', { class: 'term-host hidden-tab' });
@@ -282,6 +283,7 @@ function createTab({ agent, cwd, record, mode, chain, accountId, prompt, live, a
     // Account a new conversation starts under (null: the agent's current one).
     accountId: accountId || null,
     prompt: prompt || null,
+    name: name || null,
     status: null, // Claude's 'busy' / 'idle'
     started: false, running: false, exitCode: null, dirty: false, lastSnapshot: 0,
     node: null, exitBar: null, input: newInput(),
@@ -399,10 +401,11 @@ async function startTab(tab) {
       mode: tab.mode,
       accountId: tab.accountId,
       prompt: tab.prompt,
+      name: tab.name,
       cols: tab.term.cols,
       rows: tab.term.rows,
     });
-    tab.prompt = null;
+    tab.prompt = tab.name = null;
     tab.record = res.record;
     if (!tab.chain.includes(res.record.id)) tab.chain.push(res.record.id);
     tab.cwd = res.record.cwd;
@@ -1617,23 +1620,25 @@ async function openAgentPreview(r) {
 
 // Resumes a conversation of the agents' stores (r: { tool, id, cwd, title, accountId }) in
 // its own agent, under the account it last ran with (r.accountId); naming another account
-// carries it on under that login. `prompt` (a handoff) is sent to it. A tab already on it is
-// used as it is, unless another account is named.
-async function openNative(r, accountId, prompt) {
+// carries it on under that login. `prompt` and `name` (a handoff) are given to it. A tab already
+// on it is used as it is, unless another account is named.
+async function openNative(r, accountId, prompt, name) {
   const open = agentTabOf(r);
   if (open) {
-    if (!prompt && accountId && accountId !== tabAccount(open).id) return switchTabAccount(open, accountId);
-    activateTab(open.id); // starts a restored tab that never ran, with its prompt
-    if (prompt && open.running) submitText(open, prompt);
-    else if (prompt) {
-      open.prompt = prompt;
-      if (open.started) restartTab(open);
-    }
+    if (!prompt && !name && accountId && accountId !== tabAccount(open).id) return switchTabAccount(open, accountId);
+    if (!open.running) Object.assign(open, prompt && { prompt }, name && { name });
+    activateTab(open.id); // starts a restored tab that never ran, with its prompt and name
+    if (open.running) {
+      // Claude renames itself with /rename; the others are renamed in their store.
+      if (name && open.agent === 'claude') submitText(open, `/rename ${name}`);
+      else if (name) ipc.nameSession(open.id, name);
+      if (prompt) setTimeout(() => submitText(open, prompt), name && open.agent === 'claude' ? 500 : 0);
+    } else if ((prompt || name) && open.started) restartTab(open);
     return;
   }
   const record = await ipc.storesOpen({ tool: r.tool, id: r.id, cwd: r.cwd, title: r.title, accountId: accountId || r.accountId });
   invalidateAll();
-  createTab({ agent: r.tool, cwd: record.cwd, record, mode: 'resume', prompt });
+  createTab({ agent: r.tool, cwd: record.cwd, record, mode: 'resume', prompt, name });
 }
 
 const openRow = (r, accountId) => openNative(r, accountId).catch((err) => toast(err.message));
@@ -1691,8 +1696,8 @@ async function transfer(items, tool) {
     invalidateAll();
     toast(plan.handoff ? `Continuing with ${plan.count} new messages/tool notes` : 'Already synchronized; resuming without adding a prompt');
     // An existing destination resumes under its own last account; a new one is a new chat.
-    if (plan.target) await openNative({ tool, ...plan.target }, null, plan.prompt);
-    else await newTab({ agent: tool, cwd: items.find((r) => r.cwd === (cwd || items[0].cwd)).winCwd, mode: 'new', prompt: plan.prompt });
+    if (plan.target) await openNative({ tool, ...plan.target }, null, plan.prompt, plan.name);
+    else await newTab({ agent: tool, cwd: items.find((r) => r.cwd === (cwd || items[0].cwd)).winCwd, mode: 'new', prompt: plan.prompt, name: plan.name });
   } catch (err) {
     toast(`Conversation transfer stopped: ${err.message}`);
   }

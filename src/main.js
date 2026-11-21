@@ -494,6 +494,14 @@ function trackTab(tabId, s, listCached) {
   if (target) switchConversation(tabId, s, rec, target);
 
   const cur = history.get(s.recordId);
+  if (s.pendingName && cur && cur.nativeId) {
+    const name = s.pendingName;
+    s.pendingName = null;
+    locateAll(s.backend, { [s.agent]: agentCfg(s.agent).command })
+      .then((found) => engineFor(s.backend).setName({ tool: s.agent, id: cur.nativeId, name, command: found[s.agent], home: s.configDir }))
+      .then(() => { s.titleAt = 0; })
+      .catch((err) => send('app:notice', `The conversation could not be named "${name}": ${err.message}`));
+  }
   if (cur && cur.nativeId && !cur.customTitle && now - s.titleAt > (cur.title ? TITLE_MS : TRACK_MS)) {
     s.titleAt = now;
     const title = titleFor(s, cur.nativeId);
@@ -530,7 +538,8 @@ setInterval(trackSessions, TRACK_MS);
 const TAIL_CHARS = 2 * 1024 * 1024;
 
 // `prompt`: a first message for the agent, sent as a launch argument (a handoff).
-async function startPty({ tabId, agent, cwd, recordId, mode, accountId, cols, rows, prompt }) {
+// `name`: the conversation's name, carried by a handoff.
+async function startPty({ tabId, agent, cwd, recordId, mode, accountId, cols, rows, prompt, name }) {
   if (!AGENTS[agent]) throw new Error(`Unknown agent ${agent}`);
 
   const cfg = agentCfg(agent);
@@ -581,7 +590,7 @@ async function startPty({ tabId, agent, cwd, recordId, mode, accountId, cols, ro
     NI_AGENT_TERMINAL_SESSION: rec.id,
     ...agentEnv(agent, rec.configDir, apiKey, b.kind === 'wsl'),
   };
-  const run = { mode: runMode, nativeId: rec.nativeId, extraArgs: settings.extraArgs[agent], prompt, inlineSettings: b.toAgent(inlineSettingsFile()) };
+  const run = { mode: runMode, nativeId: rec.nativeId, extraArgs: settings.extraArgs[agent], prompt, name, inlineSettings: b.toAgent(inlineSettingsFile()) };
   let launch;
   let env;
   if (b.kind === 'wsl') {
@@ -619,6 +628,8 @@ async function startPty({ tabId, agent, cwd, recordId, mode, accountId, cols, ro
     claudePid: null,
     pidsBefore: agent === 'claude' && b.kind === 'wsl' ? claudePids(store) : null,
     status: null, // Claude's own 'busy' / 'idle'
+    // A name for an agent without --name, set once its conversation is known.
+    pendingName: AGENTS[agent].name ? null : name || null,
     buf: '',
     flushTimer: null,
     tail: [], // the latest output, to redraw the tab after the window reloads
@@ -1010,6 +1021,12 @@ handle('stores:open', async ({ tool, id, cwd, title, accountId }) => {
 });
 
 // The transfer planner. request: { sources: ['claude:<id>', ...], tool, target?, preview?, retry? }.
+// A handoff's name for a running Codex or OpenCode tab (a running Claude is sent /rename).
+ipcMain.on('session:name', (_e, { tabId, name }) => {
+  const s = sessions.get(tabId);
+  if (s) s.pendingName = name;
+});
+
 handle('stores:plan', (request) => {
   history.saveNow();
   return engineFor(newBackend()).plan(request);
