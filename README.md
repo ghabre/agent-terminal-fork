@@ -1,10 +1,10 @@
-# NI Agent Terminal
+# Agent Terminal
 
 A Windows multi-tab terminal for **Claude Code**, **Codex**, **Cursor Agent** and **OpenCode** (plus a shell tab), run natively or inside WSL, that works in any folders you choose. Every conversation is recorded in a per-folder, per-agent history and can be resumed exactly through the agent's own session store.
 
 It comes with **AgentSessionHub**, a console front end for Windows Terminal over the same conversations (see [AgentSessionHub (console)](#agentsessionhub-console)).
 
-NI Agent Terminal was started by Jaafar Serhal. Gabriel Habre's AgentSessionHub, a console picker for the same agents' sessions, became its console front end (`hub\`) and shared engine (`src\py`).
+Agent Terminal was started by Jaafar Serhal. Gabriel Habre's AgentSessionHub, a console picker for the same agents' sessions, became its console front end (`hub\`) and shared engine (`src\py`).
 
 ## Requirements
 
