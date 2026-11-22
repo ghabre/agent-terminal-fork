@@ -2,3 +2,24 @@ node_modules/
 dist/
 *.tmp
 __pycache__/
+
+# Standalone AgentSessionHub's local data: transcript snapshots and handoffs may contain
+# private conversations; agent-hub.config is its per-machine list of enabled CLIs.
+backups/
+.history/
+agent-hub.config
+
+# Editors
+.vs/
+.vscode/
+
+# A Claude Code config folder, written here when Claude runs with CLAUDE_CONFIG_DIR set to
+# this checkout. It holds transcripts and prompt history, so it must never be committed.
+/cache/
+/plugins/
+/projects/
+/sessions/
+/history.jsonl
+/settings.json
+/.last-update-result.json
+/.credentials.json
