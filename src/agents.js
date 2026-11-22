@@ -106,6 +106,10 @@ function extraPathDirs() {
   const dirs = [];
   if (process.env.APPDATA) dirs.push(path.join(process.env.APPDATA, 'npm'));
   if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, 'cursor-agent'));
+  // fnm puts Node and its global packages on a per-shell PATH that a GUI never gets;
+  // its default alias is the version a new shell would pick.
+  const fnmDir = process.env.FNM_DIR || (process.env.APPDATA && path.join(process.env.APPDATA, 'fnm'));
+  if (fnmDir) dirs.push(path.join(fnmDir, 'aliases', 'default'));
   dirs.push(path.join(HOME, '.local', 'bin'), path.join(HOME, '.opencode', 'bin'));
   return dirs;
 }
@@ -191,7 +195,8 @@ function unwrapShim(cmdPath) {
     return null;
   }
   const dir = path.dirname(cmdPath);
-  const exe = text.match(/"%dp0%\\([^"]+\.exe)"/i);
+  // A node script's shim also names "%dp0%\node.exe", only to test for a bundled Node.
+  const exe = text.match(/"%dp0%\\(?!node\.exe")([^"]+\.exe)"/i);
   if (exe) {
     const target = path.join(dir, exe[1]);
     if (fs.existsSync(target)) return { file: target, pre: [] };
