@@ -8,6 +8,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/check-electron.js",
     "start": "electron .",
     "shortcut": "electron . --install-shortcut",
     "test": "python -m unittest discover -s test",
@@ -45,6 +46,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
+  },
+  "allowScripts": {
+    "electron@33.2.1": true,
+    "node-pty@1.1.0": true
   }
 }
-

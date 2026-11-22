@@ -2,10 +2,34 @@
 
 A Windows multi-tab terminal for **Claude Code**, **Codex**, **Cursor Agent** and **OpenCode** (plus a shell tab), run natively or inside WSL, that works in any folders you choose. Every conversation is recorded in a per-folder, per-agent history and can be resumed exactly through the agent's own session store.
 
-## Run
+It comes with **AgentSessionHub**, a console front end for Windows Terminal over the same conversations (see [AgentSessionHub (console)](#agentsessionhub-console)).
 
-- `distNI-Agent-Terminal-1.2.1-portable.exe`: single file, no install.
-- `distNI-Agent-Terminal-1.2.1-setup.exe`: per-user installer with Start menu entry.
+NI Agent Terminal was started by Jaafar Serhal. Gabriel Habre's AgentSessionHub, a console picker for the same agents' sessions, became its console front end (`hub\`) and shared engine (`src\py`).
+
+## Requirements
+
+| What | Needed for | Install |
+|---|---|---|
+| Windows 10 / 11 | Everything | |
+| Node.js **20** | Running the app from source | [fnm](https://github.com/Schniz/fnm) (`winget install Schniz.fnm`), then `fnm install 20`. This repo's `.node-version` selects it. Node 26 cannot unpack Electron 33. |
+| Git for Windows | Cloning; the console hub and *Link accounts* on Windows | `winget install Git.Git` |
+| Python 3.8+ | *History → All*, *Live*, handoffs, the console hub | `winget install Python.Python.3.12` |
+| The agent CLIs you use | Their tabs | [Claude Code](https://claude.com/claude-code), Codex (`npm install -g @openai/codex`), [Cursor Agent](https://cursor.com/cli), [OpenCode](https://opencode.ai) |
+| Windows Terminal, fzf, PowerShell 7 | The console hub only | `winget install Microsoft.WindowsTerminal junegunn.fzf Microsoft.PowerShell` |
+
+## Quick start
+
+```powershell
+git clone <this repository's URL>
+cd <the cloned folder>
+npm ci                  # installs Electron and the terminal binding; stops with instructions if Electron did not unpack
+npm start               # opens the app; Setup appears on first start
+npm run shortcut        # optional: a Start menu entry for this checkout, which you can pin
+```
+
+Log in to each agent as you normally do (`claude`, `codex login`, …). The app uses those same logins: an account with an empty config folder is your normal one.
+
+For a standalone `.exe` instead of running from source, build one with `npm run dist` (see [Develop](#develop)).
 
 ## Setup
 
@@ -14,13 +38,21 @@ On first start a Setup screen asks for:
 - **Workspace folders**: any number of folders (a monorepo, a folder of checkouts, a single project…). New tabs open in the first one. Every Git repository inside them, up to two levels down (`<folder>/<repo>` or `<folder>/repos/<repo>`), is listed with its current branch in the new-tab folder picker and in History's *Folder* view, and so is a folder in between that holds repositories (`<folder>/repos`).
 - **Agents**, each of them:
   - **On / off**: switched-off agents are hidden from menus and shortcuts.
-  - **Command**: a name on `PATH` (default `claude`, `codex`, `cursor-agent`, `powershell.exe`) or a full path to an `.exe` / `.cmd`. Setup shows where each resolves. `%APPDATA%
-pm`, `%LOCALAPPDATA%cursor-agent` and `~/.local/bin` are searched as well.
+  - **Command**: a name on `PATH` (default `claude`, `codex`, `cursor-agent`, `powershell.exe`) or a full path to an `.exe` / `.cmd`. Setup shows where each resolves. `%APPDATA%\npm`, fnm's default Node (`%APPDATA%\fnm\aliases\default`), `%LOCALAPPDATA%\cursor-agent`, `~\.local\bin` and `~\.opencode\bin` are searched as well, since an app started from the Start menu does not get a shell's PATH.
   - **Accounts**: one or more logins per agent, e.g. *Personal* and *Work*. A new chat asks which one to use. See [Accounts](#accounts).
+- **Where agents run**: Windows, or a WSL distro (see [Agents view and WSL](#agents-view-and-wsl)).
 
-Change all of this later in **Settings → Workspaces & agents**, or click *workspace* in the status bar. If you upgrade from 1.1, the old `ni-agentic-development` folder is carried over as the first workspace folder, and Setup is shown once.
+Change all of this later in **Settings → Workspaces & agents**, or click *workspace* in the status bar. Settings and history live in `%APPDATA%\NI Agent Terminal`, so every checkout of the app shares them.
 
 Every tab gets `AGENT_TERMINAL_WORKSPACE=<workspace folder>` and `AGENT_TERMINAL_SESSION=<history id>`. The 1.x names `NI_WORKSPACE` / `NI_AGENT_TERMINAL_SESSION` are still set too. Agent session markers inherited from a parent agent (`CLAUDECODE`, `CLAUDE_CODE_*`, `CODEX_SANDBOX*`, …) are stripped. Otherwise a tab opened from an app started inside Claude Code would run as a child session with transcripts disabled.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `npm ci` stops with *Electron did not unpack* | Switch to Node.js 20 (`fnm use 20`), delete `node_modules\electron`, run `npm ci` again. |
+| A tab says *'codex' was not found on PATH* (or another agent) | Set the agent's full path in **Settings → Workspaces & agents**. Setup shows where each command resolves. |
+| The console hub says the terminal is *not set up yet* | Start the app once and save Setup; the hub reads its settings. |
 
 ## History
 
@@ -33,8 +65,6 @@ Saved per working folder, then per agent, in `%APPDATA%\NI Agent Terminal\histor
 | `folders\<folder>\<agent>\<id>.log` | Raw terminal output of every run (ANSI kept, used by *Replay*), capped at 25 MB |
 | `folders\<folder>\<agent>\<id>.txt` | Plain-text transcript, saved on every Enter, every 30 s, on exit and on close; runs are appended |
 | `folders\<folder>\<agent>\<id>.prompts.jsonl` | Prompts / commands sent in that conversation, one `{t, text}` per line |
-
-History from 1.0 (flat `<agent>\` folders) is moved into this layout on first start; the old index is kept as `index.v1.bak.json`.
 
 **One record per conversation, not per tab.** Running `/clear` or `/new` in a tab starts a new conversation, and `/resume` switches to another one. The tab follows the switch: the new conversation gets its own record, and the old one stays in History, resumable. A conversation where nothing but slash commands was sent is reused instead of kept.
 - Claude: read exactly from Claude's per-process file `~/.claude/sessions/<pid>.json`. Claude also gets its id up front (`--session-id`).
@@ -62,7 +92,7 @@ Once an agent has more than one account, its tabs show the account name, and a n
 
 **Switching a tab's account** (Ctrl+Shift+A cycles; or click the account in the status bar; or the tab's right-click menu): the agent is stopped, the conversation is copied into the other account's store (nothing to copy when the accounts are linked, see [Agents view and WSL](#agents-view-and-wsl)), and it resumes there. Use it to carry on in the same conversation after one account hits its usage limit.
 
-Each history record remembers its account, so resuming it and following its `/clear` / `/new` keep using the right store. A 1.2 *Account folder* is carried over as a second account.
+Each history record remembers its account, so resuming it and following its `/clear` / `/new` keep using the right store.
 
 ## Agents view and WSL
 
@@ -120,14 +150,16 @@ Web links are drawn in the theme's blue in every tab, whatever printed them; cli
 ## Develop
 
 ```powershell
-npm install
+npm ci
 npm start               # run from source
 npm run shortcut        # Start menu shortcut to run this checkout (pin it to Start or the taskbar)
 npm run check           # syntax check
 npm test                # src/py tests (Python 3)
 npm run test:hub        # hub checks on throwaway data (Git for Windows, Python)
-npm run dist            # portable + installer exe into dist\
+npm run dist            # dist\NI-Agent-Terminal-<version>-portable.exe (single file, no install) and -setup.exe (per-user installer)
 ```
+
+`package.json` lists Electron and node-pty under `allowScripts`, so npm versions that block dependency install scripts still run theirs; the `postinstall` check then confirms Electron unpacked.
 
 After changing window code (`renderer.js`, `index.html`, `styles.css`), click the app icon in the top-left corner: the window reloads on it while tabs stay open and their agents keep running. Code of the main process loads when the app is restarted.
 
@@ -141,6 +173,12 @@ $c = "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
 ```
 
 Stack: Electron 33, xterm.js 5.5, node-pty 1.1 (ConPTY, N-API prebuilds, so no native rebuild), electron-builder 25.
+
+## Upgrading from older versions
+
+- **1.1**: the old `ni-agentic-development` folder is carried over as the first workspace folder, and Setup is shown once.
+- **1.0**: history in flat `<agent>\` folders is moved into the per-folder layout on first start; the old index is kept as `index.v1.bak.json`.
+- **1.2**: an *Account folder* is carried over as a second account.
 
 ## License
 
