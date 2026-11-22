@@ -61,7 +61,7 @@ Saved per working folder, then per agent, in `%APPDATA%\NI Agent Terminal\histor
 | File | Content |
 |---|---|
 | `index.json` | One record per conversation: agent, folder, native session id, title, runs, timestamps |
-| `folders\<folder>\folder.json` | The folder's full path (`<folder>` is its name plus a short hash, e.g. `FRAMEWORK-1a2b3c4d`) |
+| `folders\<folder>\folder.json` | The folder's full path (`<folder>` is its name plus a short hash, e.g. `my-project-1a2b3c4d`) |
 | `folders\<folder>\<agent>\<id>.log` | Raw terminal output of every run (ANSI kept, used by *Replay*), capped at 25 MB |
 | `folders\<folder>\<agent>\<id>.txt` | Plain-text transcript, saved on every Enter, every 30 s, on exit and on close; runs are appended |
 | `folders\<folder>\<agent>\<id>.prompts.jsonl` | Prompts / commands sent in that conversation, one `{t, text}` per line |
@@ -176,7 +176,7 @@ Stack: Electron 33, xterm.js 5.5, node-pty 1.1 (ConPTY, N-API prebuilds, so no n
 
 ## Upgrading from older versions
 
-- **1.1**: the old `ni-agentic-development` folder is carried over as the first workspace folder, and Setup is shown once.
+- **1.1**: its single workspace folder is carried over as the first workspace folder, and Setup is shown once.
 - **1.0**: history in flat `<agent>\` folders is moved into the per-folder layout on first start; the old index is kept as `index.v1.bak.json`.
 - **1.2**: an *Account folder* is carried over as a second account.
 

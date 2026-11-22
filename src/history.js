@@ -8,7 +8,7 @@
 //   folders/<folder>/<agent>/<id>.txt           plain-text transcript, runs appended
 //   folders/<folder>/<agent>/<id>.prompts.jsonl prompts / commands typed, one {t, text} per line
 //
-// <folder> is the folder's name plus a short hash of its full path, e.g. "FRAMEWORK-1a2b3c4d".
+// <folder> is the folder's name plus a short hash of its full path, e.g. "my-project-1a2b3c4d".
 //
 // A record is one conversation of the agent. Resuming it appends to the same files.
 // When the agent starts another conversation inside the same tab (/clear, /new,

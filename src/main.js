@@ -112,7 +112,7 @@ function writeJson(file, data) {
 function normalizeSettings(s) {
   const out = { ...DEFAULT_SETTINGS, ...s };
   out.extraArgs = { ...DEFAULT_SETTINGS.extraArgs, ...(s.extraArgs || {}) };
-  // 1.1 had a single workspaceRoot (the ni-agentic-development folder).
+  // 1.1 had a single workspaceRoot.
   if (!Array.isArray(out.workspaces)) out.workspaces = [];
   if (!out.workspaces.length && s.workspaceRoot) out.workspaces = [s.workspaceRoot];
   out.workspaces = out.workspaces.filter((p) => typeof p === 'string' && p.trim());
