@@ -4,7 +4,7 @@ A Windows multi-tab terminal for **Claude Code**, **Codex**, **Cursor Agent** an
 
 It comes with **AgentSessionHub**, a console front end for Windows Terminal over the same conversations (see [AgentSessionHub (console)](#agentsessionhub-console)).
 
-Agent Terminal was started by Jaafar Serhal. Gabriel Habre's AgentSessionHub, a console picker for the same agents' sessions, became its console front end (`hub\`) and shared engine (`src\py`).
+Agent Terminal was started by Jaafar Serhal ([original repository](https://github.com/jaafarserhal/-ni-agent-terminal)); this repository is Gabriel Habre's fork of it. Gabriel's [AgentSessionHub](https://github.com/ghabre/AgentSessionHub), a console picker for the same agents' sessions, became its console front end (`hub\`) and shared engine (`src\py`); AgentSessionHub itself carries on as a standalone console tool.
 
 ## Requirements
 
